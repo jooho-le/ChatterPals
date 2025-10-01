@@ -41,15 +41,39 @@ MODEL_CHAT = "gemini-2.0-flash-lite-preview"
 SYSTEM_PROMPT = "너는 친절하고 상냥한 AI 외국어 교육 어시스턴트야. 발음,회화, 문법등을 대화하면서 도와주는 선생님이지."
 
 # --- 헬퍼 함수 ---
-def transcode_to_wav_pcm16k(audio_bytes: bytes) -> bytes:
+SUPPORTED_DIRECT_MIME = {
+    "audio/wav",
+    "audio/x-wav",
+    "audio/vnd.wave",
+    "audio/wave",
+}
+
+def transcode_to_wav_pcm16k(audio_bytes: bytes, mime_type: str | None = None) -> bytes:
     ffmpeg_path = shutil.which("ffmpeg")
     if not ffmpeg_path:
+        if mime_type and mime_type in SUPPORTED_DIRECT_MIME:
+            return audio_bytes
         raise FileNotFoundError("FFmpeg가 설치되어 있지 않습니다. 시스템에 FFmpeg를 설치해주세요.")
-    command = [
+
+    base_command = [
         ffmpeg_path, '-i', 'pipe:0', '-acodec', 'pcm_s16le',
         '-ar', '16000', '-ac', '1', '-f', 'wav', 'pipe:1'
     ]
-    process = subprocess.run(command, input=audio_bytes, capture_output=True, check=True)
+
+    command = base_command.copy()
+    if mime_type and mime_type in {"audio/pcm", "application/octet-stream"}:
+        command = [
+            ffmpeg_path, '-f', 's16le', '-ar', '44100', '-ac', '1', '-i', 'pipe:0',
+            '-acodec', 'pcm_s16le', '-ar', '16000', '-ac', '1', '-f', 'wav', 'pipe:1'
+        ]
+
+    try:
+        process = subprocess.run(command, input=audio_bytes, capture_output=True, check=True)
+    except subprocess.CalledProcessError as error:
+        if mime_type and mime_type in SUPPORTED_DIRECT_MIME:
+            return audio_bytes
+        raise error
+
     return process.stdout
 
 async def stream_text_to_speech_bytes(text: str):
@@ -79,7 +103,7 @@ async def get_ai_response(audio: UploadFile = File(...)):
     try:
         print("[1/3] 오디오 파일 수신 및 변환 중...")
         input_audio_bytes = await audio.read()
-        wav_audio_bytes = transcode_to_wav_pcm16k(input_audio_bytes)
+        wav_audio_bytes = transcode_to_wav_pcm16k(input_audio_bytes, audio.content_type)
 
         print("[2/3] Gemini File API에 오디오 업로드 및 STT 실행 중...")
         uploaded_file = genai.upload_file(
