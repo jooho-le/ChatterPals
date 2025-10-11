@@ -3,32 +3,69 @@
 const OFFSCREEN_DOCUMENT_PATH = '/offscreen.html';
 let creating; // Promise to prevent multiple offscreen documents
 
-// --- 오른쪽 클릭 메뉴 설정 ---
-chrome.runtime.onInstalled.addListener(() => {
-  chrome.contextMenus.create({
-    id: "chatterpals_analyze",
-    title: "ChatterPals로 텍스트 분석하기",
-    contexts: ["selection"]
-  });
-});
-
-chrome.contextMenus.onClicked.addListener((info, tab) => {
-  if (info.menuItemId === "chatterpals_analyze" && tab?.id) {
-    chrome.storage.local.set({ contextDataForSidebar: { text: info.selectionText } }, () => {
-        chrome.tabs.sendMessage(tab.id, { action: 'openSidebarFromContext' });
-    });
-  }
-});
+// 수동 시작(우클릭 메뉴) 제거
 
 // --- 중앙 메시지 핸들러 ---
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
+    if (request.action === 'getPageUrl') {
+        const isValid = (u) => u && /^https?:/i.test(u);
+
+        // 1) sender.tab.url 사용
+        const fromSender = sender?.tab?.url || '';
+        if (isValid(fromSender)) {
+            sendResponse({ url: fromSender });
+            return true;
+        }
+
+        // 2) tabs 권한으로 최근 포커스된 창의 active http(s) 탭 찾기
+        chrome.tabs.query({ lastFocusedWindow: true }, (tabs) => {
+            const activeHttp = (tabs || []).find((t) => t.active && isValid(t.url || ''))
+                || (tabs || []).find((t) => isValid(t.url || ''));
+            if (activeHttp && isValid(activeHttp.url)) {
+                sendResponse({ url: activeHttp.url });
+                return;
+            }
+
+            // 3) 컨텐츠 스크립트로 위임 + 1회 재시도(레이스 대비)
+            const tabId = activeHttp?.id || sender?.tab?.id || (tabs?.[0]?.id);
+            if (!tabId) {
+                sendResponse({ url: '' });
+                return;
+            }
+            const askContent = (retry = false) => {
+                chrome.tabs.sendMessage(tabId, { action: 'getPageUrl' }, (resp) => {
+                    if (!chrome.runtime.lastError && resp && isValid(resp.url)) {
+                        sendResponse({ url: resp.url });
+                    } else if (!retry) {
+                        setTimeout(() => askContent(true), 300);
+                    } else {
+                        sendResponse({ url: '' });
+                    }
+                });
+            };
+            askContent(false);
+        });
+        return true;
+    }
+
     if (request.action === 'getTextFromPage') {
-        if (sender.tab?.id) {
-            chrome.tabs.sendMessage(sender.tab.id, request, (response) => {
+        const forwardTo = (tabId) => {
+            if (!tabId) return sendResponse({});
+            chrome.tabs.sendMessage(tabId, request, (response) => {
                 if (!chrome.runtime.lastError) {
                     sendResponse(response);
+                } else {
+                    sendResponse({});
                 }
+            });
+        };
+        if (sender.tab?.id) {
+            forwardTo(sender.tab.id);
+        } else {
+            chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+                const tabId = tabs?.[0]?.id;
+                forwardTo(tabId);
             });
         }
         return true; 

@@ -40,20 +40,23 @@
         </form>
     </div>
 
-    <div id="summary-view" class="section" style="display: none;">
-        <h3 class="section-title">AI 요약</h3>
-        <div id="summary" class="summary-box"></div>
-        <div id="topics" class="topics-box"></div>
-    </div>
-
-    <div class="section">
-        <h3 class="section-title">화면 질문 생성</h3>
-        <div class="row button-group">
-            <button id="question">선택 텍스트 분석</button>
-            <button id="analyzeAll">전체 화면 분석</button>
+    <div class="section" id="auto-start-section">
+        <h3 class="section-title">자동 학습 시작</h3>
+        <div class="row button-group" style="gap: 8px; align-items: center;">
             <label class="inline-control">
+                <input type="checkbox" id="auto-start-enabled" />
+                <span>페이지 열면 자동 시작</span>
+            </label>
+            <label class="inline-control">
+                모드
+                <select id="auto-start-mode">
+                    <option value="questions" selected>질문 생성</option>
+                    <option value="discussion">토론 시작</option>
+                </select>
+            </label>
+            <label class="inline-control" id="auto-start-qcount-wrap">
                 질문 개수
-                <select id="question-count-select">
+                <select id="auto-start-qcount">
                     <option value="1">1개</option>
                     <option value="2">2개</option>
                     <option value="3" selected>3개</option>
@@ -61,9 +64,9 @@
                     <option value="5">5개</option>
                 </select>
             </label>
-            <label class="inline-control">
+            <label class="inline-control" id="auto-start-chatlimit-wrap" style="display:none;">
                 토론 질문 수
-                <select id="chat-question-limit">
+                <select id="auto-start-chatlimit">
                     <option value="3">3개</option>
                     <option value="5" selected>5개</option>
                     <option value="7">7개</option>
@@ -71,10 +74,18 @@
                 </select>
             </label>
         </div>
-        <div class="row button-group" id="analysis-choice" style="display:none;">
-            <button id="start-question-flow">📝 질문 생성하기</button>
-            <button id="chatStart">💬 토론 시작하기</button>
-        </div>
+        <p class="hint">현재 페이지의 본문 텍스트를 자동으로 가져와 바로 학습을 시작합니다.</p>
+    </div>
+
+    <div id="summary-view" class="section" style="display: none;">
+        <h3 class="section-title">AI 요약</h3>
+        <div id="summary" class="summary-box"></div>
+        <div id="topics" class="topics-box"></div>
+    </div>
+
+    <div class="section">
+        <h3 class="section-title">학습 진행</h3>
+        <p class="hint">사이드바를 열면 자동으로 학습이 시작됩니다.</p>
         <div class="row">
             <div id="result" class="result-box">Ready.</div>
         </div>

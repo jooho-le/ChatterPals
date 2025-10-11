@@ -48,6 +48,16 @@
         });
       }
     }
+
+    // Extension sidebar iframe -> page URL 요청 처리
+    if (record && record.source === 'chatter-ext' && record.type === 'REQUEST_PAGE_URL') {
+      try {
+        const url = window.location?.href || '';
+        event.source?.postMessage({ source: 'chatter-page', type: 'RESPONSE_PAGE_URL', url }, '*');
+      } catch {
+        event.source?.postMessage({ source: 'chatter-page', type: 'RESPONSE_PAGE_URL', url: '' }, '*');
+      }
+    }
   });
 
   // ---------------------------
@@ -117,7 +127,12 @@
     }
     sidebarIframe = document.createElement('iframe');
     sidebarIframe.id = SIDEBAR_IFRAME_ID;
-    sidebarIframe.src = SIDEBAR_URL;
+    // 현재 페이지 URL을 쿼리로 전달하여 사이드바가 직접 사용하도록 함
+    let pageUrl = '';
+    try { pageUrl = window.location?.href || ''; } catch {}
+    const joiner = SIDEBAR_URL.includes('?') ? '&' : '?';
+    const srcWithUrl = pageUrl ? `${SIDEBAR_URL}${joiner}page_url=${encodeURIComponent(pageUrl)}` : SIDEBAR_URL;
+    sidebarIframe.src = srcWithUrl;
     document.documentElement.appendChild(sidebarIframe);
 
     // CSS 트랜지션을 위해 다음 프레임에 visible 추가
@@ -173,6 +188,16 @@
       const type = request.type || 'selection';
       const text = type === 'fullPage' ? getFullPageText() : getSelectionText();
       sendResponse?.({ text });
+      return true;
+    }
+
+    if (request.action === 'getPageUrl') {
+      try {
+        const url = window.location?.href || '';
+        sendResponse?.({ url });
+      } catch {
+        sendResponse?.({ url: '' });
+      }
       return true;
     }
 

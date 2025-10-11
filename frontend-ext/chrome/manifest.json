@@ -24,7 +24,8 @@
     "activeTab",
     "scripting",
     "offscreen",
-    "contextMenus"
+    "contextMenus",
+    "tabs"
   ],
   "host_permissions": [
     "http://127.0.0.1:8008/*",
@@ -46,4 +47,3 @@
     }
   ]
 }
-
