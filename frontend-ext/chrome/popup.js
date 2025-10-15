@@ -1,45 +1,61 @@
-// ChatterPals Extension Frontend Script
-document.addEventListener('DOMContentLoaded', () => {
-    'use strict';
-    const urlParams = new URLSearchParams(window.location.search);
-    const context = urlParams.get('context');
-    if (context === 'sidebar') {
-        document.getElementById('sidebar-view').style.display = 'block';
-        initializeSidebar();
-    } else {
-        document.getElementById('popup-view').style.display = 'block';
-        initializePopup();
-    }
-});
+// popup.js (MV3, module)
+const TEXT_API_SERVER = 'http://127.0.0.1:8008';
 
-function initializePopup() {
-    // (이 함수는 변경 없음)
-    const toggleButton = document.getElementById('toggleButton');
-    const statusText = document.getElementById('statusText');
-    chrome.storage.local.get(['floatingButtonVisible'], (result) => {
-        const isVisible = result.floatingButtonVisible !== false;
-        toggleButton.checked = isVisible;
-        updateStatusText(isVisible);
-    });
-    toggleButton.addEventListener('change', () => {
-        const isVisible = toggleButton.checked;
-        chrome.storage.local.set({ floatingButtonVisible: isVisible }, () => {
-            updateStatusText(isVisible);
-            chrome.tabs.query({}, (tabs) => {
-                tabs.forEach(tab => {
-                    if (tab.id && !tab.url.startsWith('chrome://')) {
-                         chrome.tabs.sendMessage(tab.id, {
-                            action: 'toggleFloatingButton',
-                            visible: isVisible
-                        }).catch(error => console.log(`Tab ${tab.id} 메시지 전송 실패: ${error.message}`));
-                    }
-                });
-            });
-        });
-    });
-    function updateStatusText(isVisible) {
-        statusText.textContent = isVisible ? '플로팅 버튼 활성화' : '플로팅 버튼 비활성화';
+const $ = (sel) => document.querySelector(sel);
+const loginForm = $('#loginForm');
+const loginStatus = $('#loginStatus');
+const signedIn = $('#signed-in');
+const nickname = $('#nickname');
+const logoutBtn = $('#logoutBtn');
+const username = $('#username');
+const password = $('#password');
+const staySignedIn = $('#staySignedIn');
+const floatingToggle = $('#floatingToggle');
+const catToggle = $('#catToggle');
+const quickResult = $('#quickResult');
+const pingSummaryBtn = $('#pingSummary');
+const openSideBtn = $('#openSide');
+
+let auth = { token: null, user: null, exp: null };
+
+init();
+
+async function init() {
+  // load saved settings
+  const stored = await chrome.storage.local.get([
+    'authToken', 'authUser', 'authExp',
+    'floatingButtonVisible', 'catVisible'
+  ]);
+  auth.token = stored.authToken || null;
+  auth.user = stored.authUser || null;
+  auth.exp = stored.authExp || null;
+
+  floatingToggle.checked = stored.floatingButtonVisible !== false;
+  catToggle.checked = stored.catVisible !== false;
+
+  // auto sign-in if token exists
+  if (auth.token) {
+    try {
+      const me = await fetchMe();
+      auth.user = me;
+      await chrome.storage.local.set({ authUser: me });
+      showSignedInUI();
+    } catch (e) {
+      // token invalid — clear
+      await clearAuth(false);
+      showSignedOutUI();
     }
+  } else {
+    showSignedOutUI();
+  }
+
+  // events
+  loginForm?.addEventListener('submit', onLoginSubmit);
+  logoutBtn?.addEventListener('click', handleLogout);
+  floatingToggle?.addEventListener('change', onFloatingToggle);
+  catToggle?.addEventListener('change', onCatToggle);
+  pingSummaryBtn?.addEventListener('click', onPingSummary);
+  openSideBtn?.addEventListener('click', () => chrome.runtime.sendMessage({ action: 'openSidebarOnPage' }));
 }
 
 function initializeSidebar() {
@@ -253,39 +269,60 @@ function initializeSidebar() {
         } else {
             updateAccountUI();
         }
+function showSignedInUI() {
+  loginForm.style.display = 'none';
+  signedIn.style.display = 'block';
+  nickname.textContent = auth.user?.nickname || auth.user?.username || '사용자';
+  loginStatus.textContent = '';
+}
+
+function showSignedOutUI() {
+  loginForm.style.display = 'block';
+  signedIn.style.display = 'none';
+}
+
+async function onLoginSubmit(e) {
+  e.preventDefault();
+  const u = username.value.trim();
+  const p = password.value;
+  if (!u || !p) {
+    loginStatus.textContent = '아이디/비밀번호를 입력하세요.';
+    return;
+  }
+  loginStatus.textContent = '로그인 중...';
+  try {
+    const payload = new URLSearchParams();
+    payload.set('username', u);
+    payload.set('password', p);
+    const res = await fetch(`${TEXT_API_SERVER}/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: payload.toString()
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || '로그인 실패');
+    }
+    const data = await res.json();
+    auth.token = data.access_token;
+    auth.user = data.user || null;
+
+    // Optional exp if server returns exp (unix sec). Fallback: +6h
+    auth.exp = data.exp || Math.floor(Date.now() / 1000) + 6 * 3600;
+
+    await chrome.storage.local.set({
+      authToken: auth.token,
+      authUser: auth.user,
+      authExp: auth.exp,
+      staySignedIn: staySignedIn.checked
     });
 
-    chrome.storage.onChanged.addListener((changes, areaName) => {
-        if (areaName !== 'local') return;
-        let shouldFetchUser = false;
-        console.log('[popup] storage changed', changes);
-
-        if (Object.prototype.hasOwnProperty.call(changes, 'authToken')) {
-            authToken = changes.authToken.newValue || null;
-            if (!authToken) {
-                authUser = null;
-                updateAccountUI();
-            } else if (!Object.prototype.hasOwnProperty.call(changes, 'authUser')) {
-                shouldFetchUser = true;
-            }
-        }
-
-        if (Object.prototype.hasOwnProperty.call(changes, 'authUser')) {
-            authUser = changes.authUser.newValue || null;
-            updateAccountUI();
-        } else if (shouldFetchUser && authToken) {
-            fetchMe()
-                .then((me) => {
-                    authUser = me;
-                    chrome.storage.local.set({ authUser: me });
-                    updateAccountUI();
-                })
-                .catch((error) => {
-                    console.warn('Failed to refresh auth user', error);
-                    clearAuth(false);
-                    updateAccountUI();
-                });
-        }
+    // broadcast to content/background
+    await chrome.runtime.sendMessage({
+      action: 'broadcastAuthUpdate',
+      token: auth.token,
+      user: auth.user,
+      exp: auth.exp
     });
 
     // 이전 수동 분석 함수 제거
@@ -710,97 +747,84 @@ function initializeSidebar() {
         }
         return headers;
     }
+    loginStatus.textContent = '로그인 성공!';
+    showSignedInUI();
+  } catch (err) {
+    loginStatus.textContent = err.message;
+    await clearAuth();
+    showSignedOutUI();
+  }
+}
 
-    function showToast(message) {
-        if (!toastEl) return;
-        toastEl.textContent = message;
-        toastEl.classList.add('show');
-        if (toastTimeoutId) {
-            clearTimeout(toastTimeoutId);
-        }
-        toastTimeoutId = setTimeout(() => {
-            toastEl.classList.remove('show');
-        }, 2500);
-    }
+async function handleLogout() {
+  await clearAuth();
+  loginStatus.textContent = '로그아웃되었습니다.';
+  showSignedOutUI();
+}
 
-    async function fetchMe() {
-        const response = await fetch(`${TEXT_API_SERVER}/auth/me`, {
-            headers: buildHeaders(),
-        });
-        if (!response.ok) throw new Error('인증 정보가 만료되었습니다.');
-        return response.json();
-    }
+async function clearAuth(broadcast = true) {
+  auth = { token: null, user: null, exp: null };
+  await chrome.storage.local.remove(['authToken', 'authUser', 'authExp']);
+  if (broadcast) {
+    await chrome.runtime.sendMessage({ action: 'broadcastAuthUpdate', token: null, user: null, exp: null });
+  }
+}
 
-    async function onLoginSubmit(event) {
-        event.preventDefault();
-        const username = loginUsername.value.trim();
-        const password = loginPassword.value;
-        if (!username || !password) {
-            loginStatus.textContent = '아이디와 비밀번호를 입력해주세요.';
-            return;
-        }
-        loginStatus.textContent = '로그인 중...';
-        try {
-            const payload = new URLSearchParams();
-            payload.set('username', username);
-            payload.set('password', password);
-            const response = await fetch(`${TEXT_API_SERVER}/auth/login`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                body: payload.toString(),
-            });
-            if (!response.ok) {
-                const err = await response.json().catch(() => ({}));
-                throw new Error(err.detail || '로그인에 실패했습니다.');
-            }
-            const data = await response.json();
-            authToken = data.access_token;
-            authUser = data.user;
-            chrome.storage.local.set({ authToken, authUser }, () => {
-                chrome.runtime.sendMessage({
-                    action: 'broadcastAuthUpdate',
-                    token: authToken,
-                    user: authUser,
-                });
-            });
-            loginStatus.textContent = '로그인 성공!';
-            loginForm.reset();
-            updateAccountUI();
-        } catch (error) {
-            loginStatus.textContent = error.message;
-            clearAuth();
-            updateAccountUI();
-        }
-    }
+async function fetchMe() {
+  const headers = {};
+  if (auth.token) headers['Authorization'] = `Bearer ${auth.token}`;
+  const res = await fetch(`${TEXT_API_SERVER}/auth/me`, { headers });
+  if (!res.ok) throw new Error('인증 만료');
+  return res.json();
+}
 
-    function handleLogout() {
-        clearAuth();
-        loginStatus.textContent = '로그아웃되었습니다.';
-        updateAccountUI();
+async function onFloatingToggle() {
+  const visible = floatingToggle.checked;
+  await chrome.storage.local.set({ floatingButtonVisible: visible });
+  // Notify active tab(s)
+  const tabs = await chrome.tabs.query({ currentWindow: true });
+  for (const tab of tabs) {
+    if (tab.id && tab.url && !tab.url.startsWith('chrome://')) {
+      chrome.tabs.sendMessage(tab.id, { action: 'toggleFloatingButton', visible }).catch(() => {});
     }
+  }
+}
 
-    function clearAuth(shouldBroadcast = true) {
-        authToken = null;
-        authUser = null;
-        chrome.storage.local.remove(['authToken', 'authUser'], () => {
-            if (shouldBroadcast) {
-                chrome.runtime.sendMessage({
-                    action: 'broadcastAuthUpdate',
-                    token: null,
-                    user: null,
-                });
-            }
-        });
+async function onCatToggle() {
+  const visible = catToggle.checked;
+  await chrome.storage.local.set({ catVisible: visible });
+  const tabs = await chrome.tabs.query({ currentWindow: true });
+  for (const tab of tabs) {
+    if (tab.id && tab.url && !tab.url.startsWith('chrome://')) {
+      chrome.tabs.sendMessage(tab.id, { action: 'toggleCat', visible }).catch(() => {});
     }
+  }
+}
 
-    function updateAccountUI() {
-        if (authToken && authUser) {
-            accountSignedIn.style.display = 'block';
-            loginForm.style.display = 'none';
-            accountNickname.textContent = authUser.nickname || authUser.username;
-        } else {
-            accountSignedIn.style.display = 'none';
-            loginForm.style.display = 'flex';
-        }
+async function onPingSummary() {
+  quickResult.textContent = '선택 텍스트를 가져오는 중...';
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab?.id) return;
+  chrome.tabs.sendMessage(tab.id, { action: 'getSelectionText' }, async (resp) => {
+    const text = resp?.text?.trim();
+    if (!text) {
+      quickResult.textContent = '선택된 텍스트가 없습니다.';
+      return;
     }
+    quickResult.textContent = '요약 요청 중...';
+    try {
+      const headers = { 'Content-Type': 'application/json' };
+      if (auth.token) headers['Authorization'] = `Bearer ${auth.token}`;
+      const res = await fetch(`${TEXT_API_SERVER}/questions`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ text, max_questions: 0 })
+      });
+      if (!res.ok) throw new Error('서버 오류');
+      const data = await res.json();
+      quickResult.textContent = (data.summary || '').slice(0, 800);
+    } catch (e) {
+      quickResult.textContent = `실패: ${e.message}`;
+    }
+  });
 }

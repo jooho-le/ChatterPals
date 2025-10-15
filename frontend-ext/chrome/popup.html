@@ -1,44 +1,27 @@
 <!doctype html>
 <html lang="ko">
 <head>
-    <meta charset="utf-8">
-    <link rel="stylesheet" href="popup.css">
+  <meta charset="utf-8" />
+  <title>ChatterPals Plus</title>
+  <link rel="stylesheet" href="popup.css" />
 </head>
 <body>
+  <div class="container">
 
-<div id="popup-view" class="container" style="display: none;">
-    <div class="popup-control">
-        <h3>플로팅 버튼 표시</h3>
-        <label class="switch"><input type="checkbox" id="toggleButton"><span class="slider"></span></label>
-        <p id="statusText"></p>
-    </div>
-</div>
-
-<div id="sidebar-view" class="container" style="display: none;">
     <div class="header-actions">
-        <button id="close-sidebar-btn" class="close-btn">✖</button>
-        <a href="http://localhost:5173/" target="_blank" class="homepage-link">🏠 홈페이지로 이동</a>
+      <a href="http://localhost:5173/" target="_blank" class="homepage-link">🏠 홈페이지</a>
+      <button id="openSide" class="btn">📎 사이드뷰 열기</button>
     </div>
 
-    <div class="section account-section" id="account-section">
-        <div id="account-signed-in" style="display:none;">
-            <p class="account-greeting">안녕하세요, <span id="account-nickname"></span>님</p>
-            <button id="logoutBtn" class="btn btn-outline">로그아웃</button>
-        </div>
-        <form id="login-form" class="account-form" autocomplete="off">
-            <h3 class="section-title">로그인</h3>
-            <label class="field">
-                <span>아이디</span>
-                <input id="login-username" type="text" name="username" required minlength="3" />
-            </label>
-            <label class="field">
-                <span>비밀번호</span>
-                <input id="login-password" type="password" name="password" required />
-            </label>
-            <button type="submit" class="btn btn-primary">로그인</button>
-            <p id="login-status" class="hint"></p>
-        </form>
-    </div>
+    <section class="account-section">
+      <div id="signed-in" class="signed-in" style="display:none;">
+        <p>안녕하세요, <strong id="nickname"></strong>님</p>
+        <label class="row">
+          <input type="checkbox" id="catToggle" />
+          <span>고양이 마스코트 표시</span>
+        </label>
+        <button id="logoutBtn" class="btn btn-outline">로그아웃</button>
+      </div>
 
     <div class="section" id="auto-start-section">
         <h3 class="section-title">자동 학습 시작</h3>
@@ -97,50 +80,42 @@
              <button id="saveBtn" disabled>💾 평가 결과 저장</button>
         </div>
     </div>
+      <form id="loginForm" autocomplete="off">
+        <h3>로그인</h3>
+        <label class="field">
+          <span>아이디</span>
+          <input id="username" required minlength="3" />
+        </label>
+        <label class="field">
+          <span>비밀번호</span>
+          <input id="password" type="password" required />
+        </label>
+        <label class="row">
+          <input type="checkbox" id="staySignedIn" checked />
+          <span>로그인 상태 유지</span>
+        </label>
+        <button class="btn btn-primary" type="submit">로그인</button>
+        <p id="loginStatus" class="hint"></p>
+      </form>
+    </section>
 
-    <div id="chat" class="section" style="display:none;">
-        <h4 class="section-title">Discuss</h4>
-        <div class="chat-meta">
-            <div>세션: <code id="sid">-</code></div>
-            <div class="chat-limit">질문 수: <strong id="chat-limit-display">-</strong></div>
-        </div>
-        <div class="chat-status">AI: <span id="q">(없음)</span></div>
-        <div class="row input-group">
-          <input id="answer" type="text" placeholder="영어로 답변" />
-          <button id="send">Send</button>
-        </div>
-        <div class="row chat-actions">
-            <button id="chatEnd" class="btn btn-danger" style="display:none;">🛑 조기 종료</button>
-        </div>
-        <div id="chat-evaluation" class="discussion-eval" style="display:none;">
-            <h5>AI 평가</h5>
-            <div class="eval-scores">
-                <span>문법: <strong id="chat-grammar-score">-</strong></span>
-                <span>어휘: <strong id="chat-vocab-score">-</strong></span>
-                <span>논리: <strong id="chat-clarity-score">-</strong></span>
-            </div>
-            <p id="chat-feedback"></p>
-        </div>
-    </div>
+    <section>
+      <h3>플로팅 버튼</h3>
+      <label class="row">
+        <input type="checkbox" id="floatingToggle" />
+        <span>플로팅 버튼 표시</span>
+      </label>
+      <p class="hint">선택/더블클릭 시 단어 위 팝업이 나타납니다.</p>
+    </section>
 
-    <hr class="divider">
+    <section>
+      <h3>빠른 테스트</h3>
+      <button id="pingSummary" class="btn">현재 탭 선택 텍스트 요약</button>
+      <div id="quickResult" class="result-box">Ready.</div>
+    </section>
 
-    <div class="section">
-        <h3 class="section-title">AI 음성 대화</h3>
-        <div class="row button-group">
-            <button id="recordBtn">🎤 말하기 시작</button>
-        </div>
-        <div class="voice-result-container">
-             <p><strong>나:</strong> <span id="userTranscript">...</span></p>
-             <p><strong>AI:</strong> <span id="aiResponse">...</span></p>
-             <audio id="ai-audio-player" controls style="display: none;"></audio>
-             <p class="voice-status"><small id="voiceStatus">버튼을 눌러 대화를 시작하세요.</small></p>
-        </div>
-    </div>
-</div>
+  </div>
 
-<div id="toast" class="toast" role="status" aria-live="polite"></div>
-
-<script src="popup.js"></script>
+  <script src="popup.js" type="module"></script>
 </body>
 </html>
