@@ -1,416 +1,277 @@
 // content.js
-// -----------------------------------------------------------------------------
-// ChatterPals Content Script
-// - 페이지에 플로팅 버튼(FAB) 주입 (드래그로 위치 이동 & 위치 저장)
-// - 사이드바(iframe) 열기/닫기
-// - popup → background → content 메시지 처리
-// - 페이지/선택 텍스트 추출
-// -----------------------------------------------------------------------------
+const TEXT_API_SERVER = 'http://127.0.0.1:8008';
 
-(() => {
-  const SIDEBAR_IFRAME_ID = 'chatterpals-sidebar-iframe';
-  const FAB_ID = 'chatterpals-fab';
-  const SIDEBAR_URL = chrome.runtime.getURL('popup.html?context=sidebar');
-  const AUTH_MESSAGE_TYPE = 'AUTH_UPDATE';
-  const AUTH_SOURCE_WEB = 'chatter-web';
-  const AUTH_SOURCE_EXTENSION = 'chatter-extension';
+let state = {
+  authToken: null,
+  floatingVisible: true,
+  catVisible: true
+};
 
-  let sidebarIframe = null;
-  let fabEl = null;
+let nodes = {
+  fab: null,
+  pop: null,
+  sidebar: null,
+  cat: null
+};
 
-  bootstrapAuthState();
+init();
 
-  window.addEventListener('message', (event) => {
-    const data = event.data;
-    if (!data || typeof data !== 'object') return;
-    const record = data;
-    if (record.source === AUTH_SOURCE_WEB && record.type === AUTH_MESSAGE_TYPE) {
-      const token = typeof record.token === 'string' ? record.token : null;
-      const user = record.user ?? null;
-      console.log('[content] Received auth update from web context', token)
-      if (token) {
-        chrome.storage.local.set({ authToken: token, authUser: user ?? null }, () => {
-          console.log('[content] Saved auth token from web, broadcasting to extension tabs')
-          chrome.runtime.sendMessage({
-            action: 'broadcastAuthUpdate',
-            token,
-            user,
-          });
-        });
-      } else {
-        chrome.storage.local.remove(['authToken', 'authUser'], () => {
-          console.log('[content] Cleared auth data from web, broadcasting logout')
-          chrome.runtime.sendMessage({
-            action: 'broadcastAuthUpdate',
-            token: null,
-            user: null,
-          });
-        });
-      }
-    }
-  });
+async function init() {
+  // read initial settings
+  const stored = await chrome.storage.local.get(['authToken', 'floatingButtonVisible', 'catVisible']);
+  state.authToken = stored.authToken || null;
+  state.floatingVisible = stored.floatingButtonVisible !== false;
+  state.catVisible = stored.catVisible !== false;
 
-  // ---------------------------
-  // 초기화: 플로팅 버튼 가시성 반영 + 위치 복원
-  // ---------------------------
-  chrome.storage.local.get(['floatingButtonVisible'], (res) => {
-    const visible = res.floatingButtonVisible !== false; // 기본 true
-    updateFABVisibility(visible);
-  });
+  ensureInlinePopup();
+  ensureFab();
+  ensureSidebar();
+  ensureCat();
 
-  chrome.storage.onChanged.addListener((changes, areaName) => {
-    if (areaName !== 'local') return;
-    if (!Object.prototype.hasOwnProperty.call(changes, 'authToken') &&
-        !Object.prototype.hasOwnProperty.call(changes, 'authUser')) {
-      return;
-    }
-    chrome.storage.local.get(['authToken', 'authUser'], (stored) => {
-      const token = typeof stored.authToken === 'string' ? stored.authToken : null;
-      const user = stored.authUser ?? null;
-      console.log('[content] storage change detected, syncing to page', token);
-      syncAuthToPage(token, user);
-    });
-  });
+  // Selection / Double-click handlers
+  document.addEventListener('mouseup', handleSelection);
+  document.addEventListener('dblclick', handleSelection);
 
-  // ---------------------------
-  // 플로팅 버튼
-  // ---------------------------
-  function injectFAB() {
-    if (document.getElementById(FAB_ID)) {
-      fabEl = document.getElementById(FAB_ID);
-      return;
-    }
-    fabEl = document.createElement('button');
-    fabEl.id = FAB_ID;
-    fabEl.type = 'button';
-    fabEl.setAttribute('aria-label', 'Open ChatterPals sidebar');
-    fabEl.textContent = ''; // 아이콘은 CSS background-image 사용
-
-    // 위치 복원
-    restoreFabPosition();
-
-    // 클릭(사이드바 열기) + 드래그 이동 로직
-    enableFabDragAndClick();
-
-    document.documentElement.appendChild(fabEl);
-  }
-
-  function removeFAB() {
-    if (fabEl && fabEl.parentNode) {
-      fabEl.parentNode.removeChild(fabEl);
-    }
-    fabEl = null;
-  }
-
-  function updateFABVisibility(visible) {
-    if (visible) injectFAB();
-    else removeFAB();
-  }
-
-  // ---------------------------
-  // 사이드바
-  // ---------------------------
-  function openSidebar() {
-    if (sidebarIframe && document.getElementById(SIDEBAR_IFRAME_ID)) {
-      try { sidebarIframe.focus(); } catch {}
-      return;
-    }
-    sidebarIframe = document.createElement('iframe');
-    sidebarIframe.id = SIDEBAR_IFRAME_ID;
-    sidebarIframe.src = SIDEBAR_URL;
-    document.documentElement.appendChild(sidebarIframe);
-
-    // CSS 트랜지션을 위해 다음 프레임에 visible 추가
-    requestAnimationFrame(() => {
-      sidebarIframe?.classList.add('visible');
-    });
-  }
-
-  function closeSidebar() {
-    const iframe = document.getElementById(SIDEBAR_IFRAME_ID);
-    if (!iframe) return;
-    iframe.classList.remove('visible');
-    setTimeout(() => {
-      if (iframe.parentNode) iframe.parentNode.removeChild(iframe);
-      sidebarIframe = null;
-    }, 300);
-  }
-
-  // ---------------------------
-  // 텍스트 추출
-  // ---------------------------
-  function getSelectionText() {
-    try {
-      const sel = window.getSelection ? window.getSelection().toString() : '';
-      return (sel || '').trim();
-    } catch {
-      return '';
-    }
-  }
-
-  function getFullPageText(limit = 20000) {
-    let text = '';
-    try {
-      text = (document.body?.innerText || document.documentElement?.innerText || '').trim();
-    } catch {}
-    if (text.length > limit) text = text.slice(0, limit);
-    return text;
-  }
-
-  // ---------------------------
-  // 메시지 핸들러
-  // ---------------------------
-  chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-    // 팝업/백그라운드 → 컨텐츠 스크립트
-
-    if (request.action === 'toggleFloatingButton') {
-      updateFABVisibility(!!request.visible);
-      sendResponse?.({ ok: true });
+  // Messages from popup/background
+  chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+    if (msg?.action === 'getSelectionText') {
+      const sel = window.getSelection()?.toString() || '';
+      sendResponse?.({ text: sel });
       return true;
-    }
-
-    if (request.action === 'getTextFromPage') {
-      const type = request.type || 'selection';
-      const text = type === 'fullPage' ? getFullPageText() : getSelectionText();
-      sendResponse?.({ text });
-      return true;
-    }
-
-    if (request.action === 'openSidebarFromContext') {
+    } else if (msg?.action === 'toggleFloatingButton') {
+      state.floatingVisible = !!msg.visible;
+      if (nodes.fab) nodes.fab.style.display = state.floatingVisible ? 'flex' : 'none';
+    } else if (msg?.action === 'toggleCat') {
+      state.catVisible = !!msg.visible;
+      if (nodes.cat) nodes.cat.style.display = state.catVisible ? 'block' : 'none';
+    } else if (msg?.action === 'openSidebar') {
       openSidebar();
-      sendResponse?.({ ok: true });
-      return true;
+    } else if (msg?.action === 'broadcastAuthUpdate') {
+      state.authToken = msg.token || null;
     }
+  });
+}
 
-    if (request.action === 'closeSidebar') {
-      // ✖ 버튼 → popup.js → background.js → (여기)
-      closeSidebar();
-      sendResponse?.({ status: 'sidebar closed' });
-      return true;
+/** ---------- Inline Popup ---------- **/
+function ensureInlinePopup() {
+  if (nodes.pop) return;
+  const pop = document.createElement('div');
+  pop.className = 'cp-inline-pop';
+  pop.innerHTML = `
+    <button class="cp-close" title="닫기">✖</button>
+    <div class="cp-content"></div>
+    <div class="cp-actions">
+      <button data-act="summary">요약</button>
+      <button data-act="questions">질문 생성</button>
+      <button data-act="chat">토론 시작</button>
+    </div>
+  `;
+  document.documentElement.appendChild(pop);
+  pop.querySelector('.cp-close').addEventListener('click', () => hidePopup());
+  pop.addEventListener('click', (e) => e.stopPropagation());
+  document.addEventListener('scroll', () => hidePopup(), { passive: true });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') hidePopup(); });
+
+  pop.addEventListener('click', async (e) => {
+    const btn = e.target.closest('button[data-act]');
+    if (!btn) return;
+    const action = btn.dataset.act;
+    const text = pop.dataset.raw || '';
+    if (!text.trim()) return;
+
+    try {
+      const headers = { 'Content-Type': 'application/json' };
+      if (state.authToken) headers['Authorization'] = `Bearer ${state.authToken}`;
+
+      if (action === 'summary') {
+        setPopContent('요약 요청 중...');
+        const res = await fetch(`${TEXT_API_SERVER}/questions`, {
+          method: 'POST', headers, body: JSON.stringify({ text, max_questions: 0 })
+        });
+        const data = await res.json();
+        setPopContent(`${escapeHtml(text)}\n\n—\n요약: ${escapeHtml((data.summary || '').slice(0, 600))}`);
+      } else if (action === 'questions') {
+        setPopContent('질문 생성 중...');
+        const res = await fetch(`${TEXT_API_SERVER}/questions`, {
+          method: 'POST', headers, body: JSON.stringify({ text, max_questions: 3 })
+        });
+        const data = await res.json();
+        const qs = (data.questions || []).map((q, i) => `${i+1}. ${typeof q==='object'?q.question:q}`).join('\n');
+        setPopContent(`${escapeHtml(text)}\n\n—\n질문:\n${escapeHtml(qs)}`);
+      } else if (action === 'chat') {
+        setPopContent('토론 세션 시작 중...');
+        const res = await fetch(`${TEXT_API_SERVER}/chat/start`, {
+          method: 'POST', headers, body: JSON.stringify({ text, max_questions: 5 })
+        });
+        const data = await res.json();
+        setPopContent(`토론 시작됨. 세션: ${data.session_id?.slice(0,8) || '-'}\n첫 질문: ${data.question}`);
+      }
+    } catch (err) {
+      setPopContent(`오류: ${err.message}`);
     }
-
-    if (request.action === 'authUpdate') {
-      const token = typeof request.token === 'string' ? request.token : null;
-      const user = request.user ?? null;
-      console.log('[content] Received authUpdate message from background', token)
-      syncAuthToPage(token, user);
-      sendResponse?.({ ok: true });
-      return true;
-    }
-
-    return false;
   });
 
-  // ESC로 사이드바 닫기
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') closeSidebar();
+  nodes.pop = pop;
+}
+
+function setPopContent(text) {
+  const content = nodes.pop.querySelector('.cp-content');
+  content.textContent = text;
+}
+
+function hidePopup() {
+  if (!nodes.pop) return;
+  nodes.pop.style.display = 'none';
+  nodes.pop.dataset.raw = '';
+}
+
+function handleSelection() {
+  const sel = window.getSelection();
+  if (!sel || !sel.rangeCount) { hidePopup(); return; }
+  const text = sel.toString().trim();
+  if (!text) { hidePopup(); return; }
+
+  const range = sel.getRangeAt(0);
+  const rect = range.getBoundingClientRect();
+  if (!rect || !rect.width || !rect.height) { hidePopup(); return; }
+
+  const top = Math.max(8, window.scrollY + rect.top - 10 - 16);
+  const left = Math.min(window.scrollX + rect.left, window.scrollX + window.innerWidth - 340);
+
+  nodes.pop.style.display = 'block';
+  nodes.pop.style.top = `${top}px`;
+  nodes.pop.style.left = `${left}px`;
+  nodes.pop.dataset.raw = text;
+  setPopContent(text.length > 240 ? `${text.slice(0,240)}…` : text);
+}
+
+/** ---------- Floating button (optional) ---------- **/
+function ensureFab() {
+  if (nodes.fab) return;
+  const fab = document.createElement('div');
+  fab.className = 'cp-fab';
+  fab.title = '선택/더블클릭으로 단어 위 팝업을 띄울 수 있어요';
+  fab.textContent = '✨';
+  fab.style.display = state.floatingVisible ? 'flex' : 'none';
+  fab.addEventListener('click', () => {
+    // Show small help
+    nodes.pop.style.display = 'block';
+    nodes.pop.style.top = `${window.scrollY + window.innerHeight - 140}px`;
+    nodes.pop.style.left = `${window.scrollX + window.innerWidth - 360}px`;
+    nodes.pop.dataset.raw = 'TIP';
+    setPopContent('페이지에서 텍스트를 드래그하거나 더블클릭하면 여기 위에 팝업이 떠요!');
+  });
+  document.documentElement.appendChild(fab);
+  nodes.fab = fab;
+}
+
+/** ---------- Sidebar (simple panel) ---------- **/
+function ensureSidebar() {
+  if (nodes.sidebar) return;
+  const panel = document.createElement('div');
+  panel.className = 'cp-sidebar';
+  panel.innerHTML = `
+    <header>
+      <strong>ChatterPals</strong>
+      <button class="btn-close" title="닫기">✖</button>
+    </header>
+    <main>
+      <p>오른쪽 패널입니다. 선택 텍스트 요약/질문을 이곳에서도 표시하도록 확장 가능합니다.</p>
+    </main>
+  `;
+  panel.querySelector('.btn-close').addEventListener('click', () => panel.classList.remove('open'));
+  document.documentElement.appendChild(panel);
+  nodes.sidebar = panel;
+}
+function openSidebar() { nodes.sidebar?.classList.add('open'); }
+
+/** ---------- Cat mascot (random walk + drag) ---------- **/
+function ensureCat() {
+  if (nodes.cat) return;
+  const img = document.createElement('img');
+  img.className = 'cp-cat';
+  img.src = chrome.runtime.getURL('cat-48.png');
+  img.alt = 'cat';
+  img.style.left = '20px';
+  img.style.top = '20px';
+  img.style.display = state.catVisible ? 'block' : 'none';
+  document.documentElement.appendChild(img);
+  nodes.cat = img;
+
+  let vx = 1, vy = 1;
+  let dragging = false, dragDX = 0, dragDY = 0, rafId = null;
+
+  const step = () => {
+    if (dragging || nodes.cat.style.display === 'none') {
+      rafId = requestAnimationFrame(step);
+      return;
+    }
+    const r = nodes.cat.getBoundingClientRect();
+    let x = r.left + window.scrollX, y = r.top + window.scrollY;
+
+    // Random jitter
+    vx += (Math.random() - 0.5) * 0.6;
+    vy += (Math.random() - 0.5) * 0.6;
+    vx = Math.max(-3, Math.min(3, vx));
+    vy = Math.max(-3, Math.min(3, vy));
+    x += vx; y += vy;
+
+    const pad = 10;
+    const maxX = window.scrollX + document.documentElement.clientWidth - r.width - pad;
+    const maxY = window.scrollY + document.documentElement.clientHeight - r.height - pad;
+    const minX = window.scrollX + pad, minY = window.scrollY + pad;
+
+    if (x < minX) { x = minX; vx = Math.abs(vx); }
+    if (y < minY) { y = minY; vy = Math.abs(vy); }
+    if (x > maxX) { x = maxX; vx = -Math.abs(vx); }
+    if (y > maxY) { y = maxY; vy = -Math.abs(vy); }
+
+    nodes.cat.style.left = `${x}px`;
+    nodes.cat.style.top = `${y}px`;
+
+    rafId = requestAnimationFrame(step);
+  };
+  rafId = requestAnimationFrame(step);
+
+  // Drag
+  img.addEventListener('mousedown', (e) => {
+    dragging = true;
+    img.style.transform = 'scale(1.07)';
+    const rect = img.getBoundingClientRect();
+    dragDX = e.clientX - rect.left;
+    dragDY = e.clientY - rect.top;
+    e.preventDefault();
+  });
+  document.addEventListener('mousemove', (e) => {
+    if (!dragging) return;
+    const x = e.clientX - dragDX + window.scrollX;
+    const y = e.clientY - dragDY + window.scrollY;
+    img.style.left = `${x}px`;
+    img.style.top = `${y}px`;
+  });
+  document.addEventListener('mouseup', () => {
+    if (!dragging) return;
+    dragging = false;
+    img.style.transform = 'scale(1.0)';
   });
 
-  // ---------------------------
-  // FAB 드래그 & 클릭 처리
-  // ---------------------------
-  function enableFabDragAndClick() {
-    if (!fabEl) return;
-
-    let isDragging = false;
-    let didDrag = false;
-    let startX = 0, startY = 0;
-    let offsetX = 0, offsetY = 0;
-
-    const onMouseDown = (e) => {
-      isDragging = true;
-      didDrag = false;
-      startX = e.clientX;
-      startY = e.clientY;
-
-      const rect = fabEl.getBoundingClientRect();
-      offsetX = e.clientX - rect.left;
-      offsetY = e.clientY - rect.top;
-
-      fabEl.style.transition = 'none';   // 드래그 중엔 트랜지션 제거
-      // 좌표계: 드래그 시작 시 left/top 모드로 전환
-      fabEl.style.right = 'auto';
-      fabEl.style.bottom = 'auto';
-      fabEl.style.position = 'fixed';
-
-      // 선택 방지
-      document.body.style.userSelect = 'none';
-    };
-
-    const onMouseMove = (e) => {
-      if (!isDragging) return;
-
-      // 드래그 감지(클릭과 구분)
-      const moved = Math.abs(e.clientX - startX) + Math.abs(e.clientY - startY);
-      if (moved > 3) didDrag = true;
-
-      // 새 좌표 계산
-      const vw = Math.max(document.documentElement.clientWidth || 0, window.innerWidth || 0);
-      const vh = Math.max(document.documentElement.clientHeight || 0, window.innerHeight || 0);
-      const elW = fabEl.offsetWidth || 48;
-      const elH = fabEl.offsetHeight || 48;
-
-      let newLeft = e.clientX - offsetX;
-      let newTop  = e.clientY - offsetY;
-
-      // 뷰포트 안에서만 이동되도록 클램프
-      newLeft = Math.max(4, Math.min(newLeft, vw - elW - 4));
-      newTop  = Math.max(4, Math.min(newTop, vh - elH - 4));
-
-      fabEl.style.left = `${newLeft}px`;
-      fabEl.style.top  = `${newTop}px`;
-    };
-
-    const onMouseUp = () => {
-      if (!isDragging) return;
-      isDragging = false;
-
-      // 위치 저장
-      persistFabPosition();
-
-      // 원래 트랜지션 복원
-      fabEl.style.transition = '';
-
-      // 선택 방지 해제
-      document.body.style.userSelect = '';
-
-      // 드래그가 아니었다면 클릭으로 간주 → 사이드바 열기
-      if (!didDrag) {
-        openSidebar();
-      }
-    };
-
-    // 클릭 핸들러는 드래그와 충돌하지 않도록 제거(위 onMouseUp에서 처리)
-    fabEl.addEventListener('mousedown', onMouseDown);
-    document.addEventListener('mousemove', onMouseMove);
-    document.addEventListener('mouseup', onMouseUp);
-
-    // 터치 지원
-    fabEl.addEventListener('touchstart', (e) => {
-      const t = e.touches[0];
-      onMouseDown({ clientX: t.clientX, clientY: t.clientY });
-      e.preventDefault();
-    }, { passive: false });
-
-    document.addEventListener('touchmove', (e) => {
-      const t = e.touches[0];
-      onMouseMove({ clientX: t.clientX, clientY: t.clientY, preventDefault: () => {} });
-    }, { passive: false });
-
-    document.addEventListener('touchend', (e) => {
-      onMouseUp();
-    }, { passive: true });
-  }
-
-  function persistFabPosition() {
-    if (!fabEl) return;
-    const rect = fabEl.getBoundingClientRect();
-    const pos = { left: rect.left, top: rect.top };
-    chrome.storage.local.set({ fabPosition: pos });
-  }
-
-  function restoreFabPosition() {
-    chrome.storage.local.get(['fabPosition'], (res) => {
-      const pos = res.fabPosition;
-      if (!fabEl) return;
-
-      if (pos && Number.isFinite(pos.left) && Number.isFinite(pos.top)) {
-        // 저장된 좌표가 뷰포트 밖이면 보정
-        const vw = Math.max(document.documentElement.clientWidth || 0, window.innerWidth || 0);
-        const vh = Math.max(document.documentElement.clientHeight || 0, window.innerHeight || 0);
-        const elW = 48, elH = 48;
-
-        let left = Math.max(4, Math.min(pos.left, vw - elW - 4));
-        let top  = Math.max(4, Math.min(pos.top,  vh - elH - 4));
-
-        fabEl.style.position = 'fixed';
-        fabEl.style.left = `${left}px`;
-        fabEl.style.top  = `${top}px`;
-        fabEl.style.right = 'auto';
-        fabEl.style.bottom = 'auto';
-      } else {
-        // 저장된 값이 없으면 CSS 기본(right/bottom) 사용
-        fabEl.style.left = '';
-        fabEl.style.top = '';
-        fabEl.style.right = '';
-        fabEl.style.bottom = '';
-      }
-    });
-
-    // 윈도우 리사이즈 시, 화면 밖으로 나가있으면 살짝 안쪽으로 보정
-    window.addEventListener('resize', () => {
-      if (!fabEl) return;
-      const rect = fabEl.getBoundingClientRect();
-      const vw = Math.max(document.documentElement.clientWidth || 0, window.innerWidth || 0);
-      const vh = Math.max(document.documentElement.clientHeight || 0, window.innerHeight || 0);
-      const elW = fabEl.offsetWidth || 48;
-      const elH = fabEl.offsetHeight || 48;
-
-      let left = rect.left;
-      let top  = rect.top;
-
-      let changed = false;
-      if (left < 4) { left = 4; changed = true; }
-      if (top  < 4) { top  = 4; changed = true; }
-      if (left > vw - elW - 4) { left = vw - elW - 4; changed = true; }
-      if (top  > vh - elH - 4) { top  = vh - elH - 4; changed = true; }
-
-      if (changed) {
-        fabEl.style.position = 'fixed';
-        fabEl.style.left = `${left}px`;
-        fabEl.style.top  = `${top}px`;
-        fabEl.style.right = 'auto';
-        fabEl.style.bottom = 'auto';
-        chrome.storage.local.set({ fabPosition: { left, top } });
-      }
-    });
-  }
-
-  function syncAuthToPage(token, user) {
-    try {
-      if (token) {
-        window.localStorage.setItem('chatter_token', token);
-        console.log('[content] Synced token into page localStorage')
-      } else {
-        window.localStorage.removeItem('chatter_token');
-        console.log('[content] Removed token from page localStorage')
-      }
-    } catch (error) {
-      console.warn('Failed to sync auth to page', error);
+  // Toggle visibility on click (double click-ish UX)
+  let lastClick = 0;
+  img.addEventListener('click', () => {
+    const now = Date.now();
+    if (now - lastClick < 350) {
+      // double click => hide/show
+      if (img.style.display === 'none') img.style.display = 'block';
+      else img.style.display = 'none';
     }
-    window.postMessage(
-      {
-        source: AUTH_SOURCE_EXTENSION,
-        type: AUTH_MESSAGE_TYPE,
-        token,
-        user,
-      },
-      '*',
-    );
-  }
+    lastClick = now;
+  });
+}
 
-  function bootstrapAuthState() {
-    try {
-      chrome.storage.local.get(['authToken', 'authUser'], (stored) => {
-        const token = typeof stored.authToken === 'string' ? stored.authToken : null;
-        const user = stored.authUser ?? null;
-        if (token) {
-          console.log('[content] Bootstrapping existing extension token into page')
-          syncAuthToPage(token, user);
-        } else {
-          try {
-            const pageToken = window.localStorage.getItem('chatter_token');
-            if (pageToken && (!stored || stored.authToken !== pageToken)) {
-              console.log('[content] Found page token during bootstrap, copying into extension storage')
-              chrome.storage.local.set({ authToken: pageToken });
-            }
-          } catch (storageError) {
-            console.warn('Failed to read page token during bootstrap', storageError);
-          }
-        }
-      });
-    } catch (error) {
-      console.warn('Failed to bootstrap auth state', error);
-    }
-  }
-})();
+/** ---------- Utils ---------- **/
+function escapeHtml(s) {
+  return String(s)
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;');
+}

@@ -1,138 +1,69 @@
-// ChatterPals Background Script - Central Controller
+// background.js (MV3, module)
 
-const OFFSCREEN_DOCUMENT_PATH = '/offscreen.html';
-let creating; // Promise to prevent multiple offscreen documents
+const TEXT_API_SERVER = 'http://127.0.0.1:8008';
 
-// --- 오른쪽 클릭 메뉴 설정 ---
-chrome.runtime.onInstalled.addListener(() => {
-  chrome.contextMenus.create({
-    id: "chatterpals_analyze",
-    title: "ChatterPals로 텍스트 분석하기",
-    contexts: ["selection"]
-  });
-});
+let auth = { token: null, user: null, exp: null, stay: true };
+let authTimer = null;
 
-chrome.contextMenus.onClicked.addListener((info, tab) => {
-  if (info.menuItemId === "chatterpals_analyze" && tab?.id) {
-    chrome.storage.local.set({ contextDataForSidebar: { text: info.selectionText } }, () => {
-        chrome.tabs.sendMessage(tab.id, { action: 'openSidebarFromContext' });
-    });
+// Load auth on startup
+chrome.runtime.onInstalled.addListener(loadAuth);
+chrome.runtime.onStartup.addListener(loadAuth);
+
+async function loadAuth() {
+  const stored = await chrome.storage.local.get(['authToken', 'authUser', 'authExp', 'staySignedIn']);
+  auth.token = stored.authToken || null;
+  auth.user = stored.authUser || null;
+  auth.exp = stored.authExp || null;
+  auth.stay = stored.staySignedIn !== false;
+
+  scheduleAuthCheck();
+}
+
+function scheduleAuthCheck() {
+  if (authTimer) clearTimeout(authTimer);
+  if (!auth.token || !auth.stay) return;
+
+  const now = Math.floor(Date.now() / 1000);
+  const refreshIn = Math.max(30, (auth.exp || now + 600) - now - 60); // 60s before exp
+  authTimer = setTimeout(async () => {
+    try {
+      // Soft-check token by calling /auth/me
+      const res = await fetch(`${TEXT_API_SERVER}/auth/me`, {
+        headers: { Authorization: `Bearer ${auth.token}` }
+      });
+      if (!res.ok) throw new Error('token invalid');
+      // If server returns exp in body, update it
+      const me = await res.json();
+      await chrome.storage.local.set({ authUser: me });
+      // Keep current exp or extend by 30 min
+      const newExp = (auth.exp || Math.floor(Date.now()/1000) + 3600) + 1800;
+      auth.exp = newExp;
+      await chrome.storage.local.set({ authExp: newExp });
+    } catch (e) {
+      // token invalid -> clear unless you have refresh token route
+      await chrome.storage.local.remove(['authToken', 'authUser', 'authExp']);
+      auth.token = null; auth.user = null; auth.exp = null;
+    } finally {
+      scheduleAuthCheck();
+    }
+  }, refreshIn * 1000);
+}
+
+// Receive broadcasts
+chrome.runtime.onMessage.addListener((msg, _sender, _sendResponse) => {
+  if (msg?.action === 'broadcastAuthUpdate') {
+    auth.token = msg.token || null;
+    auth.user = msg.user || null;
+    auth.exp = msg.exp || null;
+    scheduleAuthCheck();
+  } else if (msg?.action === 'openSidebarOnPage') {
+    openSidebarOnActiveTab();
   }
 });
 
-// --- 중앙 메시지 핸들러 ---
-chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-
-    if (request.action === 'getTextFromPage') {
-        if (sender.tab?.id) {
-            chrome.tabs.sendMessage(sender.tab.id, request, (response) => {
-                if (!chrome.runtime.lastError) {
-                    sendResponse(response);
-                }
-            });
-        }
-        return true; 
-    // 사이드바 닫기
-    } else if (request.action === 'closeSidebar') {
-        const forward = (tabId) => {
-            if (tabId) chrome.tabs.sendMessage(tabId, { action: 'closeSidebar' });
-        };
-        if (sender.tab?.id) {
-            forward(sender.tab.id);
-        } else {
-            // 팝업/확장 페이지에서 온 경우: 현재 창의 활성 탭으로 전달
-            chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-                forward(tabs?.[0]?.id);
-            });
-        }
-        sendResponse && sendResponse({ ok: true });
-        return true;
-
-
-
-    } else if (request.action === 'requestMicrophonePermission') {
-        handlePermissionRequest();
-        return true;
-
-    } else if (request.action === 'startRecording' || request.action === 'stopRecording') {
-        forwardToOffscreen(request.action);
-        return true;
-
-    } else if (request.action === 'recordingStopped' || request.action === 'recordingError') {
-        chrome.runtime.sendMessage(request);
-        closeOffscreenDocument();
-
-    } else if (request.action === 'broadcastAuthUpdate') {
-        console.log('[background] Broadcasting auth update to tabs', request.token ? 'login' : 'logout');
-        chrome.tabs.query({}, (tabs) => {
-            tabs.forEach((tab) => {
-                if (!tab.id || (tab.url && tab.url.startsWith('chrome://'))) return;
-                console.log('[background] Forwarding auth update to tab', tab.id, tab.url);
-                chrome.tabs.sendMessage(tab.id, {
-                    action: 'authUpdate',
-                    token: request.token ?? null,
-                    user: request.user ?? null,
-                });
-            });
-        });
-        sendResponse?.({ ok: true });
-        return true;
-
-    } else if (request.action === 'permissionResult') {
-        chrome.runtime.sendMessage(request);
-    }
-});
-
-async function handlePermissionRequest() {
-    try {
-        const permissionStatus = await navigator.permissions.query({ name: 'microphone' });
-        if (permissionStatus.state === 'granted') {
-            chrome.runtime.sendMessage({ action: 'permissionResult', success: true });
-        } else if (permissionStatus.state === 'prompt') {
-            chrome.windows.create({
-                url: chrome.runtime.getURL('permission.html'),
-                type: 'popup', width: 400, height: 200,
-            });
-        } else { // 'denied'
-            chrome.runtime.sendMessage({ action: 'permissionResult', success: false, error: 'denied' });
-        }
-    } catch (e) {
-        console.error("Permission query failed:", e);
-        chrome.runtime.sendMessage({ action: 'permissionResult', success: false, error: 'query_failed' });
-    }
-}
-
-async function forwardToOffscreen(action) {
-    if (!(await hasOffscreenDocument())) {
-        if (creating) {
-            await creating;
-        } else {
-            creating = chrome.offscreen.createDocument({
-                url: OFFSCREEN_DOCUMENT_PATH,
-                reasons: ['USER_MEDIA'],
-                justification: '마이크 녹음을 위해 필요합니다.',
-            });
-            await creating;
-            creating = null;
-        }
-    }
-    chrome.runtime.sendMessage({ action, target: 'offscreen' });
-}
-
-async function hasOffscreenDocument() {
-    if ('getContexts' in chrome.runtime) {
-        const contexts = await chrome.runtime.getContexts({
-            contextTypes: ['OFFSCREEN_DOCUMENT']
-        });
-        return !!contexts.length;
-    } else { 
-        const clients = await self.clients.matchAll();
-        return clients.some(c => c.url.endsWith(OFFSCREEN_DOCUMENT_PATH));
-    }
-}
-
-async function closeOffscreenDocument() {
-    if (await hasOffscreenDocument()) {
-        chrome.offscreen.closeDocument();
-    }
+async function openSidebarOnActiveTab() {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab?.id) return;
+  // Tell content to open sidebar panel (we render a slim panel div)
+  chrome.tabs.sendMessage(tab.id, { action: 'openSidebar' }).catch(() => {});
 }
