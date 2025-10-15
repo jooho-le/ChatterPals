@@ -109,6 +109,16 @@ function ensureInlinePopup() {
     } catch (err) {
       setPopContent(`오류: ${err.message}`);
     }
+
+    // Extension sidebar iframe -> page URL 요청 처리
+    if (record && record.source === 'chatter-ext' && record.type === 'REQUEST_PAGE_URL') {
+      try {
+        const url = window.location?.href || '';
+        event.source?.postMessage({ source: 'chatter-page', type: 'RESPONSE_PAGE_URL', url }, '*');
+      } catch {
+        event.source?.postMessage({ source: 'chatter-page', type: 'RESPONSE_PAGE_URL', url: '' }, '*');
+      }
+    }
   });
 
   nodes.pop = pop;
@@ -242,6 +252,149 @@ function ensureCat() {
     dragDY = e.clientY - rect.top;
     e.preventDefault();
   });
+
+  // ---------------------------
+  // 플로팅 버튼
+  // ---------------------------
+  function injectFAB() {
+    if (document.getElementById(FAB_ID)) {
+      fabEl = document.getElementById(FAB_ID);
+      return;
+    }
+    fabEl = document.createElement('button');
+    fabEl.id = FAB_ID;
+    fabEl.type = 'button';
+    fabEl.setAttribute('aria-label', 'Open ChatterPals sidebar');
+    fabEl.textContent = ''; // 아이콘은 CSS background-image 사용
+
+    // 위치 복원
+    restoreFabPosition();
+
+    // 클릭(사이드바 열기) + 드래그 이동 로직
+    enableFabDragAndClick();
+
+    document.documentElement.appendChild(fabEl);
+  }
+
+  function removeFAB() {
+    if (fabEl && fabEl.parentNode) {
+      fabEl.parentNode.removeChild(fabEl);
+    }
+    fabEl = null;
+  }
+
+  function updateFABVisibility(visible) {
+    if (visible) injectFAB();
+    else removeFAB();
+  }
+
+  // ---------------------------
+  // 사이드바
+  // ---------------------------
+  function openSidebar() {
+    if (sidebarIframe && document.getElementById(SIDEBAR_IFRAME_ID)) {
+      try { sidebarIframe.focus(); } catch {}
+      return;
+    }
+    sidebarIframe = document.createElement('iframe');
+    sidebarIframe.id = SIDEBAR_IFRAME_ID;
+    // 현재 페이지 URL을 쿼리로 전달하여 사이드바가 직접 사용하도록 함
+    let pageUrl = '';
+    try { pageUrl = window.location?.href || ''; } catch {}
+    const joiner = SIDEBAR_URL.includes('?') ? '&' : '?';
+    const srcWithUrl = pageUrl ? `${SIDEBAR_URL}${joiner}page_url=${encodeURIComponent(pageUrl)}` : SIDEBAR_URL;
+    sidebarIframe.src = srcWithUrl;
+    document.documentElement.appendChild(sidebarIframe);
+
+    // CSS 트랜지션을 위해 다음 프레임에 visible 추가
+    requestAnimationFrame(() => {
+      sidebarIframe?.classList.add('visible');
+    });
+  }
+
+  function closeSidebar() {
+    const iframe = document.getElementById(SIDEBAR_IFRAME_ID);
+    if (!iframe) return;
+    iframe.classList.remove('visible');
+    setTimeout(() => {
+      if (iframe.parentNode) iframe.parentNode.removeChild(iframe);
+      sidebarIframe = null;
+    }, 300);
+  }
+
+  // ---------------------------
+  // 텍스트 추출
+  // ---------------------------
+  function getSelectionText() {
+    try {
+      const sel = window.getSelection ? window.getSelection().toString() : '';
+      return (sel || '').trim();
+    } catch {
+      return '';
+    }
+  }
+
+  function getFullPageText(limit = 20000) {
+    let text = '';
+    try {
+      text = (document.body?.innerText || document.documentElement?.innerText || '').trim();
+    } catch {}
+    if (text.length > limit) text = text.slice(0, limit);
+    return text;
+  }
+
+  // ---------------------------
+  // 메시지 핸들러
+  // ---------------------------
+  chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+    // 팝업/백그라운드 → 컨텐츠 스크립트
+
+    if (request.action === 'toggleFloatingButton') {
+      updateFABVisibility(!!request.visible);
+      sendResponse?.({ ok: true });
+      return true;
+    }
+
+    if (request.action === 'getTextFromPage') {
+      const type = request.type || 'selection';
+      const text = type === 'fullPage' ? getFullPageText() : getSelectionText();
+      sendResponse?.({ text });
+      return true;
+    }
+
+    if (request.action === 'getPageUrl') {
+      try {
+        const url = window.location?.href || '';
+        sendResponse?.({ url });
+      } catch {
+        sendResponse?.({ url: '' });
+      }
+      return true;
+    }
+
+    if (request.action === 'openSidebarFromContext') {
+      openSidebar();
+      sendResponse?.({ ok: true });
+      return true;
+    }
+
+    if (request.action === 'closeSidebar') {
+      // ✖ 버튼 → popup.js → background.js → (여기)
+      closeSidebar();
+      sendResponse?.({ status: 'sidebar closed' });
+      return true;
+    }
+
+    if (request.action === 'authUpdate') {
+      const token = typeof request.token === 'string' ? request.token : null;
+      const user = request.user ?? null;
+      console.log('[content] Received authUpdate message from background', token)
+      syncAuthToPage(token, user);
+      sendResponse?.({ ok: true });
+      return true;
+    }
+
+    return false;
   document.addEventListener('mousemove', (e) => {
     if (!dragging) return;
     const x = e.clientX - dragDX + window.scrollX;
