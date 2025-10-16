@@ -3,14 +3,14 @@ import { fileURLToPath, URL } from 'node:url'
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import vueJsx from '@vitejs/plugin-vue-jsx'
-import { VitePWA } from 'vite-plugin-pwa'
 
 // https://vite.dev/config/
-export default defineConfig({
-  plugins: [
-    vue(),
-    vueJsx(),
-    VitePWA({
+export default defineConfig(async () => {
+  let pwaPlugin: any = null
+  try {
+    const mod = await import('vite-plugin-pwa')
+    const VitePWA = (mod as any).VitePWA
+    pwaPlugin = VitePWA({
       registerType: 'autoUpdate',
       strategies: 'injectManifest',
       srcDir: 'src',
@@ -24,11 +24,21 @@ export default defineConfig({
         enabled: true,
         type: 'module',
       },
-    }),
-  ],
-  resolve: {
-    alias: {
-      '@': fileURLToPath(new URL('./src', import.meta.url))
+    })
+  } catch (e) {
+    console.warn('[vite] vite-plugin-pwa not found; PWA disabled')
+  }
+
+  return {
+    plugins: [
+      vue(),
+      vueJsx(),
+      ...(pwaPlugin ? [pwaPlugin] : []),
+    ],
+    resolve: {
+      alias: {
+        '@': fileURLToPath(new URL('./src', import.meta.url)),
+      },
     },
-  },
+  }
 })
