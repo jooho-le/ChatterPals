@@ -86,6 +86,10 @@ class QuestionsRequest(BaseModel):
     text: Optional[str] = None
     max_questions: int = Field(5, ge=0, le=20)
 
+class AnalyzeUrlRequest(BaseModel):
+    url: str = Field(..., min_length=6)
+    max_questions: int = Field(5, ge=0, le=20)
+
 class QuestionAnswerItem(BaseModel):
     question: str
     answer: str = ""
@@ -122,6 +126,10 @@ class SaveEvaluationRequest(BaseModel):
 
 class ChatStartRequest(BaseModel):
     text: str
+    max_questions: int = Field(6, ge=1, le=20)
+
+class ChatStartFromUrlRequest(BaseModel):
+    url: str = Field(..., min_length=6)
     max_questions: int = Field(6, ge=1, le=20)
 
 class ChatReplyRequest(BaseModel):
@@ -304,6 +312,24 @@ def post_questions(req: QuestionsRequest):
         return analyze((req.text or "").strip(), max_questions=req.max_questions)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/analyze_url")
+def post_analyze_url(req: AnalyzeUrlRequest):
+    """Analyze content extracted from a URL and optionally generate questions.
+
+    Returns the same shape as /questions with additional meta about the source.
+    """
+    try:
+        text, meta = extract_from_url(req.url)
+        result = analyze(text.strip(), max_questions=req.max_questions)
+        result["meta"] = {**meta}
+        return result
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"URL 분석 중 오류가 발생했습니다: {e}")
 
 
 @app.get("/level-test/start", tags=["Level Test"])
@@ -583,6 +609,22 @@ def post_chat_start(
         user_id = current_user["id"] if current_user else None
         return CHAT_MANAGER.start(req.text, max_q=req.max_questions, user_id=user_id)
     except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/chat/start_url")
+def post_chat_start_from_url(
+    req: ChatStartFromUrlRequest,
+    current_user: Optional[dict] = Depends(get_current_user_optional),
+):
+    try:
+        text, meta = extract_from_url(req.url)
+        user_id = current_user["id"] if current_user else None
+        return CHAT_MANAGER.start(text, max_q=req.max_questions, user_id=user_id)
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/chat/reply")

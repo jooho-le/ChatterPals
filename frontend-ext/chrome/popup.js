@@ -1,45 +1,61 @@
-// ChatterPals Extension Frontend Script
-document.addEventListener('DOMContentLoaded', () => {
-    'use strict';
-    const urlParams = new URLSearchParams(window.location.search);
-    const context = urlParams.get('context');
-    if (context === 'sidebar') {
-        document.getElementById('sidebar-view').style.display = 'block';
-        initializeSidebar();
-    } else {
-        document.getElementById('popup-view').style.display = 'block';
-        initializePopup();
-    }
-});
+// popup.js (MV3, module)
+const TEXT_API_SERVER = 'http://127.0.0.1:8008';
 
-function initializePopup() {
-    // (이 함수는 변경 없음)
-    const toggleButton = document.getElementById('toggleButton');
-    const statusText = document.getElementById('statusText');
-    chrome.storage.local.get(['floatingButtonVisible'], (result) => {
-        const isVisible = result.floatingButtonVisible !== false;
-        toggleButton.checked = isVisible;
-        updateStatusText(isVisible);
-    });
-    toggleButton.addEventListener('change', () => {
-        const isVisible = toggleButton.checked;
-        chrome.storage.local.set({ floatingButtonVisible: isVisible }, () => {
-            updateStatusText(isVisible);
-            chrome.tabs.query({}, (tabs) => {
-                tabs.forEach(tab => {
-                    if (tab.id && !tab.url.startsWith('chrome://')) {
-                         chrome.tabs.sendMessage(tab.id, {
-                            action: 'toggleFloatingButton',
-                            visible: isVisible
-                        }).catch(error => console.log(`Tab ${tab.id} 메시지 전송 실패: ${error.message}`));
-                    }
-                });
-            });
-        });
-    });
-    function updateStatusText(isVisible) {
-        statusText.textContent = isVisible ? '플로팅 버튼 활성화' : '플로팅 버튼 비활성화';
+const $ = (sel) => document.querySelector(sel);
+const loginForm = $('#loginForm');
+const loginStatus = $('#loginStatus');
+const signedIn = $('#signed-in');
+const nickname = $('#nickname');
+const logoutBtn = $('#logoutBtn');
+const username = $('#username');
+const password = $('#password');
+const staySignedIn = $('#staySignedIn');
+const floatingToggle = $('#floatingToggle');
+const catToggle = $('#catToggle');
+const quickResult = $('#quickResult');
+const pingSummaryBtn = $('#pingSummary');
+const openSideBtn = $('#openSide');
+
+let auth = { token: null, user: null, exp: null };
+
+init();
+
+async function init() {
+  // load saved settings
+  const stored = await chrome.storage.local.get([
+    'authToken', 'authUser', 'authExp',
+    'floatingButtonVisible', 'catVisible'
+  ]);
+  auth.token = stored.authToken || null;
+  auth.user = stored.authUser || null;
+  auth.exp = stored.authExp || null;
+
+  floatingToggle.checked = stored.floatingButtonVisible !== false;
+  catToggle.checked = stored.catVisible !== false;
+
+  // auto sign-in if token exists
+  if (auth.token) {
+    try {
+      const me = await fetchMe();
+      auth.user = me;
+      await chrome.storage.local.set({ authUser: me });
+      showSignedInUI();
+    } catch (e) {
+      // token invalid — clear
+      await clearAuth(false);
+      showSignedOutUI();
     }
+  } else {
+    showSignedOutUI();
+  }
+
+  // events
+  loginForm?.addEventListener('submit', onLoginSubmit);
+  logoutBtn?.addEventListener('click', handleLogout);
+  floatingToggle?.addEventListener('change', onFloatingToggle);
+  catToggle?.addEventListener('change', onCatToggle);
+  pingSummaryBtn?.addEventListener('click', onPingSummary);
+  openSideBtn?.addEventListener('click', () => chrome.runtime.sendMessage({ action: 'openSidebarOnPage' }));
 }
 
 function initializeSidebar() {
@@ -47,13 +63,7 @@ function initializeSidebar() {
     const summaryView = document.getElementById('summary-view');
     const summaryDiv = document.getElementById('summary');
     const topicsDiv = document.getElementById('topics');
-    const questionBtn = document.getElementById('question');
-    const analyzeAllBtn = document.getElementById('analyzeAll');
-    const questionCountSelect = document.getElementById('question-count-select');
-    const chatQuestionLimitSelect = document.getElementById('chat-question-limit');
-    const analysisChoice = document.getElementById('analysis-choice');
-    const questionFlowBtn = document.getElementById('start-question-flow');
-    const chatStartBtn = document.getElementById('chatStart');
+    // 수동 시작 요소 제거됨
     const resultDiv = document.getElementById('result');
     const questionsDiv = document.getElementById('questions');
     const actionButtons = document.getElementById('action-buttons');
@@ -86,12 +96,22 @@ function initializeSidebar() {
     const logoutBtn = document.getElementById('logoutBtn');
     const toastEl = document.getElementById('toast');
 
+    // --- 자동 시작 설정 UI ---
+    const autoStartSection = document.getElementById('auto-start-section');
+    const autoStartEnabledEl = document.getElementById('auto-start-enabled');
+    const autoStartModeEl = document.getElementById('auto-start-mode');
+    const autoStartQcountWrap = document.getElementById('auto-start-qcount-wrap');
+    const autoStartChatLimitWrap = document.getElementById('auto-start-chatlimit-wrap');
+    const autoStartQcountEl = document.getElementById('auto-start-qcount');
+    const autoStartChatLimitEl = document.getElementById('auto-start-chatlimit');
+
     // --- 서버 주소 설정 ---
     const TEXT_API_SERVER = 'http://127.0.0.1:8008';
     const VOICE_API_SERVER = 'http://127.0.0.1:8000';
 
     // --- 상태 변수 ---
     let lastAnalyzedText = '';
+    let lastAnalyzedUrl = '';
     let lastAnalysisResult = null;
     let lastEvaluationResult = null;
     let currentSessionId = '';
@@ -103,24 +123,63 @@ function initializeSidebar() {
     let authUser = null;
     let chatActive = false;
     let toastTimeoutId = null;
+    let startedAutomatically = false;
 
-    chrome.storage.local.get('contextDataForSidebar', (result) => {
-        if (result.contextDataForSidebar && result.contextDataForSidebar.text) {
-            lastAnalyzedText = result.contextDataForSidebar.text.trim();
-            analyzeTextForSummary(lastAnalyzedText);
-            chrome.storage.local.remove('contextDataForSidebar');
+    // 과거 수동 시작 경로 제거
+
+    // 페이지에서 전달된 URL 쿼리(page_url)가 있으면 우선 사용
+    try {
+        const params = new URLSearchParams(window.location.search);
+        const qsUrl = params.get('page_url');
+        if (qsUrl && /^https?:/i.test(qsUrl)) {
+            lastAnalyzedUrl = qsUrl;
+        }
+    } catch {}
+
+    // 자동 시작 설정 로드 및 적용 (URL 기반)
+    chrome.storage.local.get([
+        'autoStartEnabled',
+        'autoStartMode',
+        'autoStartQcount',
+        'autoStartChatLimit',
+    ], (cfg) => {
+        const enabled = cfg.autoStartEnabled === true;
+        const mode = cfg.autoStartMode === 'discussion' ? 'discussion' : 'questions';
+        const qcount = Number.isFinite(cfg.autoStartQcount) ? String(cfg.autoStartQcount) : '3';
+        const chatLimit = Number.isFinite(cfg.autoStartChatLimit) ? String(cfg.autoStartChatLimit) : '5';
+
+        if (autoStartEnabledEl) autoStartEnabledEl.checked = enabled;
+        if (autoStartModeEl) autoStartModeEl.value = mode;
+        if (autoStartQcountEl) autoStartQcountEl.value = qcount;
+        if (autoStartChatLimitEl) autoStartChatLimitEl.value = chatLimit;
+        updateAutoStartModeVisibility();
+
+        if (enabled && !startedAutomatically) {
+            startedAutomatically = true;
+            (async () => {
+                const url = lastAnalyzedUrl || await resolvePageUrlWithFallbacks();
+                if (!url) {
+                    resultDiv.textContent = '자동 시작: 페이지 URL을 가져오지 못했습니다.';
+                    return;
+                }
+                lastAnalyzedUrl = url;
+                try {
+                    if (mode === 'discussion') {
+                        await startChatSessionFromUrl(url);
+                    } else {
+                        await generateQuestionsFromUrl(url);
+                    }
+                } catch (e) {
+                    console.error('자동 시작 실패:', e);
+                }
+            })();
         }
     });
 
-    // --- 이벤트 리스너 ---
-    questionBtn.addEventListener('click', () => handlePageTextRequest('selection'));
-    analyzeAllBtn.addEventListener('click', () => handlePageTextRequest('fullPage'));
-    if (questionFlowBtn) {
-        questionFlowBtn.addEventListener('click', () => generateQuestions(lastAnalyzedText));
-    }
+    // --- 이벤트 리스너 (수동 시작 제거)
     evaluateBtn.addEventListener('click', handleEvaluation);
     saveBtn.addEventListener('click', handleSaveEvaluation);
-    chatStartBtn.addEventListener('click', startChatSession);
+    // 수동 토론 시작 제거됨
     sendBtn.addEventListener('click', sendReply);
     chatEndBtn.addEventListener('click', handleChatEnd);
     recordBtn.addEventListener('click', handleRecordClick);
@@ -130,6 +189,68 @@ function initializeSidebar() {
     });
     loginForm.addEventListener('submit', onLoginSubmit);
     logoutBtn.addEventListener('click', handleLogout);
+
+    function updateAutoStartModeVisibility() {
+        if (!autoStartModeEl) return;
+        const mode = autoStartModeEl.value;
+        if (autoStartQcountWrap) autoStartQcountWrap.style.display = (mode === 'discussion') ? 'none' : '';
+        if (autoStartChatLimitWrap) autoStartChatLimitWrap.style.display = (mode === 'discussion') ? '' : 'none';
+    }
+
+    if (autoStartEnabledEl) {
+        autoStartEnabledEl.addEventListener('change', () => {
+            chrome.storage.local.set({ autoStartEnabled: autoStartEnabledEl.checked });
+        });
+    }
+    if (autoStartModeEl) {
+        autoStartModeEl.addEventListener('change', () => {
+            updateAutoStartModeVisibility();
+            chrome.storage.local.set({ autoStartMode: autoStartModeEl.value });
+        });
+    }
+    if (autoStartQcountEl) {
+        autoStartQcountEl.addEventListener('change', () => {
+            chrome.storage.local.set({ autoStartQcount: parseInt(autoStartQcountEl.value, 10) });
+        });
+    }
+    if (autoStartChatLimitEl) {
+        autoStartChatLimitEl.addEventListener('change', () => {
+            chrome.storage.local.set({ autoStartChatLimit: parseInt(autoStartChatLimitEl.value, 10) });
+        });
+    }
+
+    async function resolvePageUrlWithFallbacks() {
+        // 1) background를 통해 탭 URL 시도
+        try {
+            const r1 = await new Promise((res) => chrome.runtime.sendMessage({ action: 'getPageUrl' }, res));
+            const u1 = (r1 && r1.url) || '';
+            if (u1 && /^https?:/i.test(u1)) return u1;
+        } catch {}
+        // 2) referrer 사용 시도 (많은 사이트에서 iframe referrer 전달)
+        try {
+            if (document.referrer && /^https?:/i.test(document.referrer)) return document.referrer;
+        } catch {}
+        // 3) parent window에 postMessage로 직접 요청 (content.js가 응답)
+        try {
+            const u3 = await new Promise((resolve) => {
+                let settled = false;
+                const handler = (ev) => {
+                    const msg = ev.data;
+                    if (!msg || typeof msg !== 'object') return;
+                    if (msg.source === 'chatter-page' && msg.type === 'RESPONSE_PAGE_URL') {
+                        window.removeEventListener('message', handler);
+                        settled = true;
+                        resolve(msg.url || '');
+                    }
+                };
+                window.addEventListener('message', handler);
+                try { window.parent.postMessage({ source: 'chatter-ext', type: 'REQUEST_PAGE_URL' }, '*'); } catch {}
+                setTimeout(() => { if (!settled) { window.removeEventListener('message', handler); resolve(''); } }, 800);
+            });
+            if (u3 && /^https?:/i.test(u3)) return u3;
+        } catch {}
+        return '';
+    }
 
     chrome.storage.local.get(['authToken', 'authUser'], async (stored) => {
         if (stored.authToken) {
@@ -148,60 +269,69 @@ function initializeSidebar() {
         } else {
             updateAccountUI();
         }
+function showSignedInUI() {
+  loginForm.style.display = 'none';
+  signedIn.style.display = 'block';
+  nickname.textContent = auth.user?.nickname || auth.user?.username || '사용자';
+  loginStatus.textContent = '';
+}
+
+function showSignedOutUI() {
+  loginForm.style.display = 'block';
+  signedIn.style.display = 'none';
+}
+
+async function onLoginSubmit(e) {
+  e.preventDefault();
+  const u = username.value.trim();
+  const p = password.value;
+  if (!u || !p) {
+    loginStatus.textContent = '아이디/비밀번호를 입력하세요.';
+    return;
+  }
+  loginStatus.textContent = '로그인 중...';
+  try {
+    const payload = new URLSearchParams();
+    payload.set('username', u);
+    payload.set('password', p);
+    const res = await fetch(`${TEXT_API_SERVER}/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: payload.toString()
     });
-
-    chrome.storage.onChanged.addListener((changes, areaName) => {
-        if (areaName !== 'local') return;
-        let shouldFetchUser = false;
-        console.log('[popup] storage changed', changes);
-
-        if (Object.prototype.hasOwnProperty.call(changes, 'authToken')) {
-            authToken = changes.authToken.newValue || null;
-            if (!authToken) {
-                authUser = null;
-                updateAccountUI();
-            } else if (!Object.prototype.hasOwnProperty.call(changes, 'authUser')) {
-                shouldFetchUser = true;
-            }
-        }
-
-        if (Object.prototype.hasOwnProperty.call(changes, 'authUser')) {
-            authUser = changes.authUser.newValue || null;
-            updateAccountUI();
-        } else if (shouldFetchUser && authToken) {
-            fetchMe()
-                .then((me) => {
-                    authUser = me;
-                    chrome.storage.local.set({ authUser: me });
-                    updateAccountUI();
-                })
-                .catch((error) => {
-                    console.warn('Failed to refresh auth user', error);
-                    clearAuth(false);
-                    updateAccountUI();
-                });
-        }
-    });
-
-    function handlePageTextRequest(type) {
-        const message = type === 'selection' ? '선택된 텍스트를 분석 중...' : '페이지 전체 텍스트를 분석 중...';
-        resultDiv.textContent = message;
-        chrome.runtime.sendMessage({ action: 'getTextFromPage', type }, (response) => {
-            if (response && response.text && response.text.trim()) {
-                lastAnalyzedText = response.text.trim();
-                analyzeTextForSummary(lastAnalyzedText);
-            } else {
-                resultDiv.textContent = '분석할 텍스트가 없습니다.';
-            }
-        });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || '로그인 실패');
     }
+    const data = await res.json();
+    auth.token = data.access_token;
+    auth.user = data.user || null;
+
+    // Optional exp if server returns exp (unix sec). Fallback: +6h
+    auth.exp = data.exp || Math.floor(Date.now() / 1000) + 6 * 3600;
+
+    await chrome.storage.local.set({
+      authToken: auth.token,
+      authUser: auth.user,
+      authExp: auth.exp,
+      staySignedIn: staySignedIn.checked
+    });
+
+    // broadcast to content/background
+    await chrome.runtime.sendMessage({
+      action: 'broadcastAuthUpdate',
+      token: auth.token,
+      user: auth.user,
+      exp: auth.exp
+    });
+
+    // 이전 수동 분석 함수 제거
 
     async function analyzeTextForSummary(text) {
         lastAnalysisResult = null;
         lastEvaluationResult = null;
         questionsDiv.innerHTML = '';
         actionButtons.style.display = 'none';
-        analysisChoice.style.display = 'none';
         chatDiv.style.display = 'none';
         chatEvaluationBox.style.display = 'none';
         chatActive = false;
@@ -222,34 +352,32 @@ function initializeSidebar() {
             summaryDiv.textContent = data.summary;
             topicsDiv.innerHTML = (data.topics || []).map(topic => `<span class="topic-tag">${topic}</span>`).join('');
             summaryView.style.display = 'block';
-            resultDiv.textContent = '요약이 준비되었습니다. 질문 생성 또는 토론 시작을 선택하세요.';
-            analysisChoice.style.display = 'flex';
+            resultDiv.textContent = '요약이 준비되었습니다.';
         } catch (error) {
             resultDiv.textContent = '텍스트 분석 서버에 연결할 수 없습니다.';
             console.error('요약 분석 실패:', error);
         }
     }
 
-    async function generateQuestions(text) {
-        if (!text || !text.trim()) {
-            resultDiv.textContent = '먼저 텍스트를 분석해주세요.';
-            return;
-        }
+    async function generateQuestionsFromUrl(url) {
         resultDiv.textContent = 'AI가 질문을 만들고 있습니다...';
         questionsDiv.innerHTML = '';
         actionButtons.style.display = 'none';
         evaluateBtn.disabled = true;
         saveBtn.disabled = true;
         lastEvaluationResult = null;
-        analysisChoice.style.display = 'none';
 
-        const questionCount = parseInt(questionCountSelect.value, 10);
+        const questionCount = (() => {
+            const el = document.getElementById('auto-start-qcount');
+            const v = el ? parseInt(el.value, 10) : 3;
+            return Number.isFinite(v) ? v : 3;
+        })();
 
         try {
-            const response = await fetch(`${TEXT_API_SERVER}/questions`, {
+            const response = await fetch(`${TEXT_API_SERVER}/analyze_url`, {
                 method: 'POST',
                 headers: buildHeaders({ 'Content-Type': 'application/json' }),
-                body: JSON.stringify({ text, max_questions: questionCount }),
+                body: JSON.stringify({ url, max_questions: questionCount }),
             });
             if (!response.ok) throw new Error(`서버 오류: ${response.status}`);
             const data = await response.json();
@@ -283,7 +411,6 @@ function initializeSidebar() {
         } catch (error) {
             resultDiv.textContent = '질문 생성에 실패했습니다. 다시 시도해 주세요.';
             console.error('질문 생성 API 호출 실패:', error);
-            analysisChoice.style.display = 'flex';
         }
     }
 
@@ -353,7 +480,7 @@ function initializeSidebar() {
             summary: lastAnalysisResult.summary,
             topics: lastAnalysisResult.topics,
             items: lastEvaluationResult,
-            source_text: lastAnalyzedText.substring(0, 4000)
+            source_text: (lastAnalyzedText && lastAnalyzedText.substring(0, 4000)) || lastAnalyzedUrl || ''
         };
 
         try {
@@ -374,24 +501,19 @@ function initializeSidebar() {
         }
     }
 //--토론세션--//
-    async function startChatSession() {
-        let textForChat = lastAnalyzedText;
-        if (!textForChat) {
-            textForChat = window.getSelection().toString().trim();
-        }
-        if (!textForChat) {
-            resultDiv.textContent = '토론을 시작할 텍스트를 먼저 분석하거나, 페이지에서 텍스트를 선택해주세요.';
-            return;
-        }
-
+    async function startChatSessionFromUrl(url) {
         resultDiv.textContent = '채팅 세션을 시작합니다...';
         try {
-            const response = await fetch(`${TEXT_API_SERVER}/chat/start`, {
+            const response = await fetch(`${TEXT_API_SERVER}/chat/start_url`, {
                 method: 'POST',
                 headers: buildHeaders({ 'Content-Type': 'application/json' }),
                 body: JSON.stringify({
-                    text: textForChat,
-                    max_questions: parseInt(chatQuestionLimitSelect.value, 10),
+                    url,
+                    max_questions: (() => {
+                        const el = document.getElementById('auto-start-chatlimit');
+                        const v = el ? parseInt(el.value, 10) : 5;
+                        return Number.isFinite(v) ? v : 5;
+                    })(),
                 }),
             });
             if (!response.ok) {
@@ -404,7 +526,7 @@ function initializeSidebar() {
             sidSpan.textContent = currentSessionId.substring(0, 8);
             qSpan.textContent = data.question;
             chatDiv.style.display = 'block';
-            chatLimitDisplay.textContent = chatQuestionLimitSelect.value;
+            chatLimitDisplay.textContent = (document.getElementById('auto-start-chatlimit')?.value || '5');
             resultDiv.textContent = '채팅이 시작되었습니다.';
             chatActive = true;
             chatEndBtn.style.display = 'inline-flex';
@@ -415,7 +537,6 @@ function initializeSidebar() {
         } catch (error) {
             resultDiv.textContent = `오류: ${error.message}`;
             console.error('채팅 시작 API 호출 실패:', error);
-            analysisChoice.style.display = 'flex';
         }
     }
 
@@ -626,97 +747,84 @@ function initializeSidebar() {
         }
         return headers;
     }
+    loginStatus.textContent = '로그인 성공!';
+    showSignedInUI();
+  } catch (err) {
+    loginStatus.textContent = err.message;
+    await clearAuth();
+    showSignedOutUI();
+  }
+}
 
-    function showToast(message) {
-        if (!toastEl) return;
-        toastEl.textContent = message;
-        toastEl.classList.add('show');
-        if (toastTimeoutId) {
-            clearTimeout(toastTimeoutId);
-        }
-        toastTimeoutId = setTimeout(() => {
-            toastEl.classList.remove('show');
-        }, 2500);
-    }
+async function handleLogout() {
+  await clearAuth();
+  loginStatus.textContent = '로그아웃되었습니다.';
+  showSignedOutUI();
+}
 
-    async function fetchMe() {
-        const response = await fetch(`${TEXT_API_SERVER}/auth/me`, {
-            headers: buildHeaders(),
-        });
-        if (!response.ok) throw new Error('인증 정보가 만료되었습니다.');
-        return response.json();
-    }
+async function clearAuth(broadcast = true) {
+  auth = { token: null, user: null, exp: null };
+  await chrome.storage.local.remove(['authToken', 'authUser', 'authExp']);
+  if (broadcast) {
+    await chrome.runtime.sendMessage({ action: 'broadcastAuthUpdate', token: null, user: null, exp: null });
+  }
+}
 
-    async function onLoginSubmit(event) {
-        event.preventDefault();
-        const username = loginUsername.value.trim();
-        const password = loginPassword.value;
-        if (!username || !password) {
-            loginStatus.textContent = '아이디와 비밀번호를 입력해주세요.';
-            return;
-        }
-        loginStatus.textContent = '로그인 중...';
-        try {
-            const payload = new URLSearchParams();
-            payload.set('username', username);
-            payload.set('password', password);
-            const response = await fetch(`${TEXT_API_SERVER}/auth/login`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                body: payload.toString(),
-            });
-            if (!response.ok) {
-                const err = await response.json().catch(() => ({}));
-                throw new Error(err.detail || '로그인에 실패했습니다.');
-            }
-            const data = await response.json();
-            authToken = data.access_token;
-            authUser = data.user;
-            chrome.storage.local.set({ authToken, authUser }, () => {
-                chrome.runtime.sendMessage({
-                    action: 'broadcastAuthUpdate',
-                    token: authToken,
-                    user: authUser,
-                });
-            });
-            loginStatus.textContent = '로그인 성공!';
-            loginForm.reset();
-            updateAccountUI();
-        } catch (error) {
-            loginStatus.textContent = error.message;
-            clearAuth();
-            updateAccountUI();
-        }
-    }
+async function fetchMe() {
+  const headers = {};
+  if (auth.token) headers['Authorization'] = `Bearer ${auth.token}`;
+  const res = await fetch(`${TEXT_API_SERVER}/auth/me`, { headers });
+  if (!res.ok) throw new Error('인증 만료');
+  return res.json();
+}
 
-    function handleLogout() {
-        clearAuth();
-        loginStatus.textContent = '로그아웃되었습니다.';
-        updateAccountUI();
+async function onFloatingToggle() {
+  const visible = floatingToggle.checked;
+  await chrome.storage.local.set({ floatingButtonVisible: visible });
+  // Notify active tab(s)
+  const tabs = await chrome.tabs.query({ currentWindow: true });
+  for (const tab of tabs) {
+    if (tab.id && tab.url && !tab.url.startsWith('chrome://')) {
+      chrome.tabs.sendMessage(tab.id, { action: 'toggleFloatingButton', visible }).catch(() => {});
     }
+  }
+}
 
-    function clearAuth(shouldBroadcast = true) {
-        authToken = null;
-        authUser = null;
-        chrome.storage.local.remove(['authToken', 'authUser'], () => {
-            if (shouldBroadcast) {
-                chrome.runtime.sendMessage({
-                    action: 'broadcastAuthUpdate',
-                    token: null,
-                    user: null,
-                });
-            }
-        });
+async function onCatToggle() {
+  const visible = catToggle.checked;
+  await chrome.storage.local.set({ catVisible: visible });
+  const tabs = await chrome.tabs.query({ currentWindow: true });
+  for (const tab of tabs) {
+    if (tab.id && tab.url && !tab.url.startsWith('chrome://')) {
+      chrome.tabs.sendMessage(tab.id, { action: 'toggleCat', visible }).catch(() => {});
     }
+  }
+}
 
-    function updateAccountUI() {
-        if (authToken && authUser) {
-            accountSignedIn.style.display = 'block';
-            loginForm.style.display = 'none';
-            accountNickname.textContent = authUser.nickname || authUser.username;
-        } else {
-            accountSignedIn.style.display = 'none';
-            loginForm.style.display = 'flex';
-        }
+async function onPingSummary() {
+  quickResult.textContent = '선택 텍스트를 가져오는 중...';
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab?.id) return;
+  chrome.tabs.sendMessage(tab.id, { action: 'getSelectionText' }, async (resp) => {
+    const text = resp?.text?.trim();
+    if (!text) {
+      quickResult.textContent = '선택된 텍스트가 없습니다.';
+      return;
     }
+    quickResult.textContent = '요약 요청 중...';
+    try {
+      const headers = { 'Content-Type': 'application/json' };
+      if (auth.token) headers['Authorization'] = `Bearer ${auth.token}`;
+      const res = await fetch(`${TEXT_API_SERVER}/questions`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ text, max_questions: 0 })
+      });
+      if (!res.ok) throw new Error('서버 오류');
+      const data = await res.json();
+      quickResult.textContent = (data.summary || '').slice(0, 800);
+    } catch (e) {
+      quickResult.textContent = `실패: ${e.message}`;
+    }
+  });
 }
