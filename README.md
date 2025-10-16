@@ -118,3 +118,24 @@ API
 
 주의
 - 사내 프록시/보안 정책에 따라 `http://127.0.0.1:8008` 접근이 제한될 수 있습니다. 필요 시 `http://localhost:8008`로 바꾸세요(서버는 CORS 허용).
+
+
+<aside>
+
+**백앤드 서버 설정**
+
+텍스트 분석/채팅 서버 : uvicorn backend.service-text.server:app --reload --port 8008
+음성 서버 : uvicorn backend.service-voice.server:app --reload --port 8000
+프론트엔드 실행 : cd frontend-app, npm run dev
+
+</aside>
+
+<aside>
+
+**1. 파이썬 가상환경 생성 및 활성화**
+
+python -m venv venv
+source venv/bin/activate  # macOS/Linux
+.\venv\Scripts\activate    # Window
+
+</aside>
