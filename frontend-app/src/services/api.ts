@@ -46,3 +46,25 @@ export async function getTtsAudio(text: string): Promise<Blob> {
   return response.blob();
 }
 
+export type HintLevel = 'starter' | 'keywords' | 'translation';
+
+export interface HintResponse {
+  level: HintLevel;
+  hint_text: string;
+  keywords?: string[];
+  playful_remark?: string | null;
+}
+
+export async function requestHint(context: string, level: HintLevel, usageCount = 0): Promise<HintResponse> {
+  const response = await fetch(`${VOICE_API_BASE}/hints`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ context, level, usage_count: usageCount }),
+  });
+
+  if (!response.ok) {
+    throw new Error('힌트 생성에 실패했습니다.');
+  }
+
+  return response.json() as Promise<HintResponse>;
+}

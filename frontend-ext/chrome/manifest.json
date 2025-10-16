@@ -16,6 +16,8 @@
     "storage",
     "activeTab",
     "scripting",
+    "offscreen",
+    "contextMenus",
     "tabs"
   ],
   "host_permissions": [
