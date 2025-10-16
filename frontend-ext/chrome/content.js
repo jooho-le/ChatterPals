@@ -2,14 +2,16 @@
 // -----------------------------------------------------------------------------
 // ChatterPals Content Script
 // - 페이지에 플로팅 버튼(FAB) 주입 (드래그로 위치 이동 & 위치 저장)
-// - 사이드바(iframe) 열기/닫기
+// - 사이드바(iframe/패널) 열기/닫기
 // - popup → background → content 메시지 처리
 // - 페이지/선택 텍스트 추출
+// - 힌트 오버레이(자동/선택 감지), 정답 채점 API 연동
 // -----------------------------------------------------------------------------
 
 (() => {
+  // ===== Constants =====
   const SIDEBAR_IFRAME_ID = 'chatterpals-sidebar-iframe';
-  const FAB_ID = 'chatterpals-fab';
+  const FAB_ID = 'chatterpals-fab'; // (현재 cp-fab 사용, 이 ID는 미사용이나 남겨둠)
   const SIDEBAR_URL = chrome.runtime.getURL('popup.html?context=sidebar');
   const AUTH_MESSAGE_TYPE = 'AUTH_UPDATE';
   const AUTH_SOURCE_WEB = 'chatter-web';
@@ -17,18 +19,34 @@
   const HINT_API_BASE = 'http://127.0.0.1:8000/api';
   const HINT_ENDPOINT = `${HINT_API_BASE}/hints`;
   const ANSWER_ENDPOINT = `${HINT_API_BASE}/check-answer`;
+  const TEXT_API_SERVER = 'http://127.0.0.1:8008';
 
+  // ===== State / Nodes =====
   let sidebarIframe = null;
   let fabEl = null;
 
+  let state = {
+    authToken: null,
+    floatingVisible: true,
+    catVisible: true,
+  };
+
+  let nodes = {
+    fab: null,
+    pop: null,
+    sidepanel: null, // 단순 패널
+    cat: null,
+  };
+
+  // ===== Tease/Question lines & actions =====
   const TEASE_LINES = ['Need a nudge?', 'Want some help?'];
   const QUESTION_LINES = ['Fill the blank in English!', 'Try guessing first!'];
-
   const HINT_ACTIONS = [
     { level: 'starter', label: '영어 힌트' },
     { level: 'translation', label: '한글 문장 보기' },
   ];
 
+  // ===== DOM scanning / skip rules =====
   const SKIP_ANCESTOR_SELECTOR =
     'script, style, noscript, code, pre, textarea, input, select, button, option, svg, math, head, iframe, canvas, video, audio, picture';
   const MAX_TEXT_NODE_SCAN = 1200;
@@ -36,7 +54,9 @@
 
   let contentMutationObserver = null;
   let autoHintRescanTimer = null;
+  let overlayPositionRaf = null;
 
+  // ===== Overlay state & refs =====
   const overlayState = {
     visible: false,
     mode: 'tease',
@@ -95,10 +115,13 @@
     answerReference: null,
   };
 
-  let overlayPositionRaf = null;
-
+  // ===== Bootstrap (no-op placeholder to keep original call sites) =====
+  function bootstrapAuthState() {
+    // 실제 초기 auth 동기화는 init()에서 수행
+  }
   bootstrapAuthState();
 
+  // ===== Helpers =====
   function resolveAnchorElement(candidate) {
     if (!candidate) return null;
     if (candidate instanceof HTMLElement) return candidate;
@@ -402,30 +425,30 @@
     if (helper && helper.contains(element)) return null;
     if (cover && cover.contains(element)) return null;
 
-  const rawText = node.textContent || '';
-  const normalized = normalizeText(rawText);
-  if (!normalized || normalized.length < MIN_SENTENCE_LENGTH) return null;
+    const rawText = node.textContent || '';
+    const normalized = normalizeText(rawText);
+    if (!normalized || normalized.length < MIN_SENTENCE_LENGTH) return null;
 
-  const rect = measureTextNodeRect(node);
-  if (!rect) return null;
+    const rect = measureTextNodeRect(node);
+    if (!rect) return null;
 
-  const maskInfo = buildMaskInfo(node, rawText, rect);
-  if (!maskInfo) return null;
+    const maskInfo = buildMaskInfo(node, rawText, rect);
+    if (!maskInfo) return null;
 
-  return {
-    element,
-    rect,
-    contextText: maskInfo.fullSentence,
-    rawText,
-    node,
-    maskRect: maskInfo.maskRect,
-    maskText: maskInfo.maskText,
-    maskedSentence: maskInfo.maskedSentence,
-    fullSentence: maskInfo.fullSentence,
-    maskStart: maskInfo.maskStart,
-    maskEnd: maskInfo.maskEnd,
-  };
-}
+    return {
+      element,
+      rect,
+      contextText: maskInfo.fullSentence,
+      rawText,
+      node,
+      maskRect: maskInfo.maskRect,
+      maskText: maskInfo.maskText,
+      maskedSentence: maskInfo.maskedSentence,
+      fullSentence: maskInfo.fullSentence,
+      maskStart: maskInfo.maskStart,
+      maskEnd: maskInfo.maskEnd,
+    };
+  }
 
   function scheduleAutoHintRescan(delay = 400) {
     if (!contentMutationObserver && document.body) {
@@ -514,7 +537,7 @@
     };
   }
 
-function cleanupAnchorSignature() {
+  function cleanupAnchorSignature() {
     if (overlayState.anchorElement) {
       overlayState.anchorElement.removeAttribute('data-chatter-anchor-id');
     }
@@ -1087,8 +1110,9 @@ function cleanupAnchorSignature() {
         if (typeof raw !== 'string') return null;
         raw = raw.trim();
         if (!raw) return null;
-        if (containsHangul(raw) && hiddenExpression) {
-          return `Expected in English: ${hiddenExpression}`;
+        // 원문 코드 버그: hiddenExpression 미정의 → hiddenAnswer로 수정
+        if (containsHangul(raw) && hiddenAnswer) {
+          return `Expected in English: ${hiddenAnswer}`;
         }
         return raw;
       })();
@@ -1509,6 +1533,7 @@ function cleanupAnchorSignature() {
     }
   }
 
+  // ===== Global listeners for overlay =====
   document.addEventListener('keyup', (event) => {
     if (event.key === 'Escape') {
       hideHintOverlay();
@@ -1531,6 +1556,7 @@ function cleanupAnchorSignature() {
 
   initializeAutoHint();
 
+  // ===== AUTH sync from web context (fixed closure) =====
   window.addEventListener('message', (event) => {
     const data = event.data;
     if (!data || typeof data !== 'object') return;
@@ -1538,127 +1564,20 @@ function cleanupAnchorSignature() {
     if (record.source === AUTH_SOURCE_WEB && record.type === AUTH_MESSAGE_TYPE) {
       const token = typeof record.token === 'string' ? record.token : null;
       const user = record.user ?? null;
-      console.log('[content] Received auth update from web context', token)
+      console.log('[content] Received auth update from web context', token);
       if (token) {
         chrome.storage.local.set({ authToken: token, authUser: user ?? null }, () => {
-          console.log('[content] Saved auth token from web, broadcasting to extension tabs')
+          console.log('[content] Saved auth token from web, broadcasting to extension tabs');
           chrome.runtime.sendMessage({
             action: 'broadcastAuthUpdate',
             token,
             user,
           });
-const TEXT_API_SERVER = 'http://127.0.0.1:8008';
-
-let state = {
-  authToken: null,
-  floatingVisible: true,
-  catVisible: true
-};
-
-let nodes = {
-  fab: null,
-  pop: null,
-  sidebar: null,
-  cat: null
-};
-
-init();
-
-async function init() {
-  // read initial settings
-  const stored = await chrome.storage.local.get(['authToken', 'floatingButtonVisible', 'catVisible']);
-  state.authToken = stored.authToken || null;
-  state.floatingVisible = stored.floatingButtonVisible !== false;
-  state.catVisible = stored.catVisible !== false;
-
-  ensureInlinePopup();
-  ensureFab();
-  ensureSidebar();
-  ensureCat();
-
-  // Selection / Double-click handlers
-  document.addEventListener('mouseup', handleSelection);
-  document.addEventListener('dblclick', handleSelection);
-
-  // Messages from popup/background
-  chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
-    if (msg?.action === 'getSelectionText') {
-      const sel = window.getSelection()?.toString() || '';
-      sendResponse?.({ text: sel });
-      return true;
-    } else if (msg?.action === 'toggleFloatingButton') {
-      state.floatingVisible = !!msg.visible;
-      if (nodes.fab) nodes.fab.style.display = state.floatingVisible ? 'flex' : 'none';
-    } else if (msg?.action === 'toggleCat') {
-      state.catVisible = !!msg.visible;
-      if (nodes.cat) nodes.cat.style.display = state.catVisible ? 'block' : 'none';
-    } else if (msg?.action === 'openSidebar') {
-      openSidebar();
-    } else if (msg?.action === 'broadcastAuthUpdate') {
-      state.authToken = msg.token || null;
-    }
-  });
-}
-
-/** ---------- Inline Popup ---------- **/
-function ensureInlinePopup() {
-  if (nodes.pop) return;
-  const pop = document.createElement('div');
-  pop.className = 'cp-inline-pop';
-  pop.innerHTML = `
-    <button class="cp-close" title="닫기">✖</button>
-    <div class="cp-content"></div>
-    <div class="cp-actions">
-      <button data-act="summary">요약</button>
-      <button data-act="questions">질문 생성</button>
-      <button data-act="chat">토론 시작</button>
-    </div>
-  `;
-  document.documentElement.appendChild(pop);
-  pop.querySelector('.cp-close').addEventListener('click', () => hidePopup());
-  pop.addEventListener('click', (e) => e.stopPropagation());
-  document.addEventListener('scroll', () => hidePopup(), { passive: true });
-  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') hidePopup(); });
-
-  pop.addEventListener('click', async (e) => {
-    const btn = e.target.closest('button[data-act]');
-    if (!btn) return;
-    const action = btn.dataset.act;
-    const text = pop.dataset.raw || '';
-    if (!text.trim()) return;
-
-    try {
-      const headers = { 'Content-Type': 'application/json' };
-      if (state.authToken) headers['Authorization'] = `Bearer ${state.authToken}`;
-
-      if (action === 'summary') {
-        setPopContent('요약 요청 중...');
-        const res = await fetch(`${TEXT_API_SERVER}/questions`, {
-          method: 'POST', headers, body: JSON.stringify({ text, max_questions: 0 })
         });
-        const data = await res.json();
-        setPopContent(`${escapeHtml(text)}\n\n—\n요약: ${escapeHtml((data.summary || '').slice(0, 600))}`);
-      } else if (action === 'questions') {
-        setPopContent('질문 생성 중...');
-        const res = await fetch(`${TEXT_API_SERVER}/questions`, {
-          method: 'POST', headers, body: JSON.stringify({ text, max_questions: 3 })
-        });
-        const data = await res.json();
-        const qs = (data.questions || []).map((q, i) => `${i+1}. ${typeof q==='object'?q.question:q}`).join('\n');
-        setPopContent(`${escapeHtml(text)}\n\n—\n질문:\n${escapeHtml(qs)}`);
-      } else if (action === 'chat') {
-        setPopContent('토론 세션 시작 중...');
-        const res = await fetch(`${TEXT_API_SERVER}/chat/start`, {
-          method: 'POST', headers, body: JSON.stringify({ text, max_questions: 5 })
-        });
-        const data = await res.json();
-        setPopContent(`토론 시작됨. 세션: ${data.session_id?.slice(0,8) || '-'}\n첫 질문: ${data.question}`);
       }
-    } catch (err) {
-      setPopContent(`오류: ${err.message}`);
     }
 
-    // Extension sidebar iframe -> page URL 요청 처리
+    // 확장 iframe → 페이지 URL 요청 처리 (별도 타입)
     if (record && record.source === 'chatter-ext' && record.type === 'REQUEST_PAGE_URL') {
       try {
         const url = window.location?.href || '';
@@ -1669,184 +1588,302 @@ function ensureInlinePopup() {
     }
   });
 
-  nodes.pop = pop;
-}
+  // ===== Inline Popup =====
+  function ensureInlinePopup() {
+    if (nodes.pop) return;
+    const pop = document.createElement('div');
+    pop.className = 'cp-inline-pop';
+    pop.innerHTML = `
+      <button class="cp-close" title="닫기">✖</button>
+      <div class="cp-content"></div>
+      <div class="cp-actions">
+        <button data-act="summary">요약</button>
+        <button data-act="questions">질문 생성</button>
+        <button data-act="chat">토론 시작</button>
+      </div>
+    `;
+    document.documentElement.appendChild(pop);
+    pop.querySelector('.cp-close').addEventListener('click', () => hidePopup());
+    pop.addEventListener('click', (e) => e.stopPropagation());
+    document.addEventListener('scroll', () => hidePopup(), { passive: true });
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') hidePopup(); });
 
-function setPopContent(text) {
-  const content = nodes.pop.querySelector('.cp-content');
-  content.textContent = text;
-}
+    pop.addEventListener('click', async (e) => {
+      const btn = e.target.closest('button[data-act]');
+      if (!btn) return;
+      const action = btn.dataset.act;
+      const text = pop.dataset.raw || '';
+      if (!text.trim()) return;
 
-function hidePopup() {
-  if (!nodes.pop) return;
-  nodes.pop.style.display = 'none';
-  nodes.pop.dataset.raw = '';
-}
+      try {
+        const headers = { 'Content-Type': 'application/json' };
+        if (state.authToken) headers['Authorization'] = `Bearer ${state.authToken}`;
 
-function handleSelection() {
-  const sel = window.getSelection();
-  if (!sel || !sel.rangeCount) { hidePopup(); return; }
-  const text = sel.toString().trim();
-  if (!text) { hidePopup(); return; }
+        if (action === 'summary') {
+          setPopContent('요약 요청 중...');
+          const res = await fetch(`${TEXT_API_SERVER}/questions`, {
+            method: 'POST', headers, body: JSON.stringify({ text, max_questions: 0 })
+          });
+          const data = await res.json();
+          setPopContent(`${escapeHtml(text)}\n\n—\n요약: ${escapeHtml((data.summary || '').slice(0, 600))}`);
+        } else if (action === 'questions') {
+          setPopContent('질문 생성 중...');
+          const res = await fetch(`${TEXT_API_SERVER}/questions`, {
+            method: 'POST', headers, body: JSON.stringify({ text, max_questions: 3 })
+          });
+          const data = await res.json();
+          const qs = (data.questions || []).map((q, i) => `${i+1}. ${typeof q==='object'?q.question:q}`).join('\n');
+          setPopContent(`${escapeHtml(text)}\n\n—\n질문:\n${escapeHtml(qs)}`);
+        } else if (action === 'chat') {
+          setPopContent('토론 세션 시작 중...');
+          const res = await fetch(`${TEXT_API_SERVER}/chat/start`, {
+            method: 'POST', headers, body: JSON.stringify({ text, max_questions: 5 })
+          });
+          const data = await res.json();
+          setPopContent(`토론 시작됨. 세션: ${data.session_id?.slice(0,8) || '-'}\n첫 질문: ${data.question}`);
+        }
+      } catch (err) {
+        setPopContent(`오류: ${err.message}`);
+      }
+    });
 
-  const range = sel.getRangeAt(0);
-  const rect = range.getBoundingClientRect();
-  if (!rect || !rect.width || !rect.height) { hidePopup(); return; }
+    nodes.pop = pop;
+  }
 
-  const top = Math.max(8, window.scrollY + rect.top - 10 - 16);
-  const left = Math.min(window.scrollX + rect.left, window.scrollX + window.innerWidth - 340);
+  function setPopContent(text) {
+    const content = nodes.pop.querySelector('.cp-content');
+    content.textContent = text;
+  }
 
-  nodes.pop.style.display = 'block';
-  nodes.pop.style.top = `${top}px`;
-  nodes.pop.style.left = `${left}px`;
-  nodes.pop.dataset.raw = text;
-  setPopContent(text.length > 240 ? `${text.slice(0,240)}…` : text);
-}
+  function hidePopup() {
+    if (!nodes.pop) return;
+    nodes.pop.style.display = 'none';
+    nodes.pop.dataset.raw = '';
+  }
 
-/** ---------- Floating button (optional) ---------- **/
-function ensureFab() {
-  if (nodes.fab) return;
-  const fab = document.createElement('div');
-  fab.className = 'cp-fab';
-  fab.title = '선택/더블클릭으로 단어 위 팝업을 띄울 수 있어요';
-  fab.textContent = '✨';
-  fab.style.display = state.floatingVisible ? 'flex' : 'none';
-  fab.addEventListener('click', () => {
-    // Show small help
+  function handleSelection() {
+    const sel = window.getSelection();
+    if (!sel || !sel.rangeCount) { hidePopup(); return; }
+    const text = sel.toString().trim();
+    if (!text) { hidePopup(); return; }
+
+    const range = sel.getRangeAt(0);
+    const rect = range.getBoundingClientRect();
+    if (!rect || !rect.width || !rect.height) { hidePopup(); return; }
+
+    const top = Math.max(8, window.scrollY + rect.top - 10 - 16);
+    const left = Math.min(window.scrollX + rect.left, window.scrollX + window.innerWidth - 340);
+
     nodes.pop.style.display = 'block';
-    nodes.pop.style.top = `${window.scrollY + window.innerHeight - 140}px`;
-    nodes.pop.style.left = `${window.scrollX + window.innerWidth - 360}px`;
-    nodes.pop.dataset.raw = 'TIP';
-    setPopContent('페이지에서 텍스트를 드래그하거나 더블클릭하면 여기 위에 팝업이 떠요!');
-  });
-  document.documentElement.appendChild(fab);
-  nodes.fab = fab;
-}
-
-/** ---------- Sidebar (simple panel) ---------- **/
-function ensureSidebar() {
-  if (nodes.sidebar) return;
-  const panel = document.createElement('div');
-  panel.className = 'cp-sidebar';
-  panel.innerHTML = `
-    <header>
-      <strong>ChatterPals</strong>
-      <button class="btn-close" title="닫기">✖</button>
-    </header>
-    <main>
-      <p>오른쪽 패널입니다. 선택 텍스트 요약/질문을 이곳에서도 표시하도록 확장 가능합니다.</p>
-    </main>
-  `;
-  panel.querySelector('.btn-close').addEventListener('click', () => panel.classList.remove('open'));
-  document.documentElement.appendChild(panel);
-  nodes.sidebar = panel;
-}
-function openSidebar() { nodes.sidebar?.classList.add('open'); }
-
-/** ---------- Cat mascot (random walk + drag) ---------- **/
-function ensureCat() {
-  if (nodes.cat) return;
-  const img = document.createElement('img');
-  img.className = 'cp-cat';
-  img.src = chrome.runtime.getURL('cat-48.png');
-  img.alt = 'cat';
-  img.style.left = '20px';
-  img.style.top = '20px';
-  img.style.display = state.catVisible ? 'block' : 'none';
-  document.documentElement.appendChild(img);
-  nodes.cat = img;
-
-  let vx = 1, vy = 1;
-  let dragging = false, dragDX = 0, dragDY = 0, rafId = null;
-
-  const step = () => {
-    if (dragging || nodes.cat.style.display === 'none') {
-      rafId = requestAnimationFrame(step);
-      return;
-    }
-    const r = nodes.cat.getBoundingClientRect();
-    let x = r.left + window.scrollX, y = r.top + window.scrollY;
-
-    // Random jitter
-    vx += (Math.random() - 0.5) * 0.6;
-    vy += (Math.random() - 0.5) * 0.6;
-    vx = Math.max(-3, Math.min(3, vx));
-    vy = Math.max(-3, Math.min(3, vy));
-    x += vx; y += vy;
-
-    const pad = 10;
-    const maxX = window.scrollX + document.documentElement.clientWidth - r.width - pad;
-    const maxY = window.scrollY + document.documentElement.clientHeight - r.height - pad;
-    const minX = window.scrollX + pad, minY = window.scrollY + pad;
-
-    if (x < minX) { x = minX; vx = Math.abs(vx); }
-    if (y < minY) { y = minY; vy = Math.abs(vy); }
-    if (x > maxX) { x = maxX; vx = -Math.abs(vx); }
-    if (y > maxY) { y = maxY; vy = -Math.abs(vy); }
-
-    nodes.cat.style.left = `${x}px`;
-    nodes.cat.style.top = `${y}px`;
-
-    rafId = requestAnimationFrame(step);
-  };
-  rafId = requestAnimationFrame(step);
-
-  // Drag
-  img.addEventListener('mousedown', (e) => {
-    dragging = true;
-    img.style.transform = 'scale(1.07)';
-    const rect = img.getBoundingClientRect();
-    dragDX = e.clientX - rect.left;
-    dragDY = e.clientY - rect.top;
-    e.preventDefault();
-  });
-
-  // ---------------------------
-  // 플로팅 버튼
-  // ---------------------------
-  function injectFAB() {
-    if (document.getElementById(FAB_ID)) {
-      fabEl = document.getElementById(FAB_ID);
-      return;
-    }
-    fabEl = document.createElement('button');
-    fabEl.id = FAB_ID;
-    fabEl.type = 'button';
-    fabEl.setAttribute('aria-label', 'Open ChatterPals sidebar');
-    fabEl.textContent = ''; // 아이콘은 CSS background-image 사용
-
-    // 위치 복원
-    restoreFabPosition();
-
-    // 클릭(사이드바 열기) + 드래그 이동 로직
-    enableFabDragAndClick();
-
-    document.documentElement.appendChild(fabEl);
+    nodes.pop.style.top = `${top}px`;
+    nodes.pop.style.left = `${left}px`;
+    nodes.pop.dataset.raw = text;
+    setPopContent(text.length > 240 ? `${text.slice(0,240)}…` : text);
   }
 
-  function removeFAB() {
-    if (fabEl && fabEl.parentNode) {
-      fabEl.parentNode.removeChild(fabEl);
-    }
-    fabEl = null;
+  // ===== Simple Floating Button (cp-fab) =====
+  function ensureFab() {
+    if (nodes.fab) return;
+
+    // 1) 아이콘 절대경로 (MV3에서 상대경로 금지)
+    const iconURL = chrome.runtime.getURL('icons/icon-logo.png');
+
+    // 2) FAB 엘리먼트
+    const fab = document.createElement('div');
+    fab.className = 'cp-fab';
+    fab.title = '텍스트를 드래그/더블클릭하면 팝업이 떠요!';
+    fab.style.display = state.floatingVisible ? 'flex' : 'none';
+
+    // 아이콘을 CSS 커스텀 속성으로 주입 → content.css의 background에서 사용
+    fab.style.setProperty('--cp-fab-icon', `url("${iconURL}")`);
+
+    // 기본 시작 위치(우하단). 드래그 시 left/top 모드로 전환
+    fab.style.position = 'fixed';
+    fab.style.right = '18px';
+    fab.style.bottom = '18px';
+    fab.style.left = 'unset';
+    fab.style.top = 'unset';
+
+    // 3) 저장된 좌표 복원 (사용자가 드래그로 옮겼던 위치)
+    loadFabPos().then((pos) => {
+      if (pos && typeof pos.x === 'number' && typeof pos.y === 'number') {
+        // 드래그 저장값은 viewport 좌표계(left/top)로 저장함
+        fab.style.left = `${pos.x}px`;
+        fab.style.top = `${pos.y}px`;
+        fab.style.right = 'unset';
+        fab.style.bottom = 'unset';
+      }
+    }).catch(() => { /* ignore */ });
+
+    // 4) 클릭 → 작은 도움말 팝업
+    fab.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (!nodes.pop) return;
+      nodes.pop.style.display = 'block';
+      nodes.pop.style.top = `${window.scrollY + window.innerHeight - 140}px`;
+      nodes.pop.style.left = `${window.scrollX + window.innerWidth - 360}px`;
+      nodes.pop.dataset.raw = 'TIP';
+      setPopContent('텍스트를 드래그하거나 더블클릭하면 이 위에 팝업이 떠요!');
+    });
+
+    // 5) 드래그 이동(좌표 저장 포함)
+    let dragging = false;
+    let dragDX = 0, dragDY = 0;
+    let saveTimer = null;
+
+    const onMouseDown = (e) => {
+      dragging = true;
+      const r = fab.getBoundingClientRect();
+      dragDX = e.clientX - r.left;
+      dragDY = e.clientY - r.top;
+
+      // 드래그 시작 시 left/top 모드로 전환(고정된 right/bottom 해제)
+      fab.style.left = `${r.left}px`;
+      fab.style.top = `${r.top}px`;
+      fab.style.right = 'unset';
+      fab.style.bottom = 'unset';
+
+      e.preventDefault();
+      e.stopPropagation();
+    };
+
+    const onMouseMove = (e) => {
+      if (!dragging) return;
+
+      // viewport 경계 내에서만 이동
+      const vw = document.documentElement.clientWidth;
+      const vh = document.documentElement.clientHeight;
+      const w = fab.offsetWidth || 50;
+      const h = fab.offsetHeight || 50;
+
+      let x = e.clientX - dragDX;
+      let y = e.clientY - dragDY;
+
+      const pad = 6;
+      x = Math.max(pad, Math.min(vw - w - pad, x));
+      y = Math.max(pad, Math.min(vh - h - pad, y));
+
+      fab.style.left = `${x}px`;
+      fab.style.top = `${y}px`;
+
+      // 너무 자주 저장하지 않도록 디바운스
+      if (saveTimer) clearTimeout(saveTimer);
+      saveTimer = setTimeout(() => {
+        saveFabPos(x, y);
+      }, 160);
+    };
+
+    const onMouseUp = () => {
+      if (!dragging) return;
+      dragging = false;
+
+      // 최종 좌표 저장
+      const r = fab.getBoundingClientRect();
+      saveFabPos(r.left, r.top);
+    };
+
+    fab.addEventListener('mousedown', onMouseDown);
+    document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('mouseup', onMouseUp);
+
+    // 6) 리사이즈 시 뷰포트 밖으로 나가면 살짝 밀어 넣기
+    const nudgeIntoView = () => {
+      const r = fab.getBoundingClientRect();
+      const vw = document.documentElement.clientWidth;
+      const vh = document.documentElement.clientHeight;
+      const pad = 6;
+
+      let x = r.left, y = r.top;
+      let nudged = false;
+      if (x < pad) { x = pad; nudged = true; }
+      if (y < pad) { y = pad; nudged = true; }
+      if (x + r.width > vw - pad) { x = vw - r.width - pad; nudged = true; }
+      if (y + r.height > vh - pad) { y = vh - r.height - pad; nudged = true; }
+
+      if (nudged) {
+        fab.style.left = `${x}px`;
+        fab.style.top = `${y}px`;
+        fab.style.right = 'unset';
+        fab.style.bottom = 'unset';
+        saveFabPos(x, y);
+      }
+    };
+    window.addEventListener('resize', nudgeIntoView, { passive: true });
+
+    // 7) 사이드바 열릴 때 오른쪽 가장자리와 겹치면 자동 회피
+    const nudgeForSidebar = () => {
+      const r = fab.getBoundingClientRect();
+      const vw = document.documentElement.clientWidth;
+      const sidebarWidth = Math.min(420, Math.round(vw * 0.9)); // .cp-sidebar 규칙과 동일
+      const margin = 12;
+
+      // 오른쪽 가장자리와 겹치면 왼쪽으로 민다(좌표 모드 전환 포함)
+      if (r.right > vw - sidebarWidth) {
+        const targetLeft = Math.max(
+          6,
+          vw - sidebarWidth - r.width - margin
+        );
+        fab.style.left = `${targetLeft}px`;
+        fab.style.top = `${r.top}px`;
+        fab.style.right = 'unset';
+        fab.style.bottom = 'unset';
+        saveFabPos(targetLeft, r.top);
+      }
+    };
+
+    // 8) DOM 부착
+    document.body.appendChild(fab);
+    nodes.fab = fab;
+
+    // 최초 1회, 살짝 보정
+    setTimeout(() => {
+      nudgeIntoView();
+    }, 50);
+
+    // 사이드바 토글에 반응 (C의 onMessage 패치와 함께 동작)
+    fab._nudgeForSidebar = nudgeForSidebar;
   }
 
-  function updateFABVisibility(visible) {
-    if (visible) injectFAB();
-    else removeFAB();
+
+  function saveFabPos(x, y) {
+    try {
+      chrome.storage.local.set({ fabPos: { x: Math.round(x), y: Math.round(y) } });
+    } catch {}
+  }
+  function loadFabPos() {
+    return chrome.storage.local.get('fabPos').then((obj) => obj.fabPos || null);
   }
 
-  // ---------------------------
-  // 사이드바
-  // ---------------------------
-  function openSidebar() {
+
+  // ===== Side Panel (simple div) =====
+  function ensureSidepanel() {
+    if (nodes.sidepanel) return;
+    const panel = document.createElement('div');
+    panel.className = 'cp-sidebar';
+    panel.innerHTML = `
+      <header>
+        <strong>ChatterPals</strong>
+        <button class="btn-close" title="닫기">✖</button>
+      </header>
+      <main>
+        <p>오른쪽 패널입니다. 선택 텍스트 요약/질문을 이곳에서도 표시하도록 확장 가능합니다.</p>
+      </main>
+    `;
+    panel.querySelector('.btn-close').addEventListener('click', () => panel.classList.remove('open'));
+    document.documentElement.appendChild(panel);
+    nodes.sidepanel = panel;
+  }
+  function openSidepanel() { nodes.sidepanel?.classList.add('open'); }
+
+  // ===== Sidebar (iframe variant) =====
+  function openSidebarIframe() {
     if (sidebarIframe && document.getElementById(SIDEBAR_IFRAME_ID)) {
       try { sidebarIframe.focus(); } catch {}
       return;
     }
     sidebarIframe = document.createElement('iframe');
     sidebarIframe.id = SIDEBAR_IFRAME_ID;
-    // 현재 페이지 URL을 쿼리로 전달하여 사이드바가 직접 사용하도록 함
+    // 현재 페이지 URL을 쿼리로 전달
     let pageUrl = '';
     try { pageUrl = window.location?.href || ''; } catch {}
     const joiner = SIDEBAR_URL.includes('?') ? '&' : '?';
@@ -1860,7 +1897,7 @@ function ensureCat() {
     });
   }
 
-  function closeSidebar() {
+  function closeSidebarIframe() {
     const iframe = document.getElementById(SIDEBAR_IFRAME_ID);
     if (!iframe) return;
     iframe.classList.remove('visible');
@@ -1870,16 +1907,257 @@ function ensureCat() {
     }, 300);
   }
 
-  // ---------------------------
-  // 텍스트 추출
-  // ---------------------------
-  function getSelectionText() {
-    try {
-      const sel = window.getSelection ? window.getSelection().toString() : '';
-      return (sel || '').trim();
-    } catch {
-      return '';
-    }
+  // ===== Cat mascot =====
+  function ensureCat() {
+    if (nodes.cat) return;
+    const img = document.createElement('img');
+    img.className = 'cp-cat';
+    img.src = chrome.runtime.getURL('cat-48.png');
+    img.alt = 'cat';
+    img.style.left = '20px';
+    img.style.top = '20px';
+    img.style.display = state.catVisible ? 'block' : 'none';
+    document.documentElement.appendChild(img);
+    nodes.cat = img;
+
+    let vx = 1, vy = 1;
+    let dragging = false, dragDX = 0, dragDY = 0, rafId = null;
+
+    const step = () => {
+      if (dragging || nodes.cat.style.display === 'none') {
+        rafId = requestAnimationFrame(step);
+        return;
+      }
+      const r = nodes.cat.getBoundingClientRect();
+      let x = r.left + window.scrollX, y = r.top + window.scrollY;
+
+      // Random jitter
+      vx += (Math.random() - 0.5) * 0.6;
+      vy += (Math.random() - 0.5) * 0.6;
+      vx = Math.max(-3, Math.min(3, vx));
+      vy = Math.max(-3, Math.min(3, vy));
+      x += vx; y += vy;
+
+      const pad = 10;
+      const maxX = window.scrollX + document.documentElement.clientWidth - r.width - pad;
+      const maxY = window.scrollY + document.documentElement.clientHeight - r.height - pad;
+      const minX = window.scrollX + pad, minY = window.scrollY + pad;
+
+      if (x < minX) { x = minX; vx = Math.abs(vx); }
+      if (y < minY) { y = minY; vy = Math.abs(vy); }
+      if (x > maxX) { x = maxX; vx = -Math.abs(vx); }
+      if (y > maxY) { y = maxY; vy = -Math.abs(vy); }
+
+      nodes.cat.style.left = `${x}px`;
+      nodes.cat.style.top = `${y}px`;
+
+      rafId = requestAnimationFrame(step);
+    };
+    rafId = requestAnimationFrame(step);
+
+    // Drag
+    img.addEventListener('mousedown', (e) => {
+      dragging = true;
+      img.style.transform = 'scale(1.07)';
+      const rect = img.getBoundingClientRect();
+      dragDX = e.clientX - rect.left;
+      dragDY = e.clientY - rect.top;
+      e.preventDefault();
+    });
+
+    document.addEventListener('mousemove', (e) => {
+      if (!dragging) return;
+      const x = e.clientX - dragDX + window.scrollX;
+      const y = e.clientY - dragDY + window.scrollY;
+      img.style.left = `${x}px`;
+      img.style.top = `${y}px`;
+    });
+    document.addEventListener('mouseup', () => {
+      if (!dragging) return;
+      dragging = false;
+      img.style.transform = 'scale(1.0)';
+    });
+
+    // Double-click-ish to toggle visibility
+    let lastClick = 0;
+    img.addEventListener('click', () => {
+      const now = Date.now();
+      if (now - lastClick < 350) {
+        if (img.style.display === 'none') img.style.display = 'block';
+        else img.style.display = 'none';
+      }
+      lastClick = now;
+    });
+  }
+
+  // ===== Selection bindings =====
+  function bindSelectionHandlers() {
+    document.addEventListener('mouseup', handleSelection);
+    document.addEventListener('dblclick', handleSelection);
+  }
+
+  // ===== Init (reads storage, build UI, wire messages) =====
+  async function init() {
+    // read initial settings
+    const stored = await chrome.storage.local.get(['authToken', 'floatingButtonVisible', 'catVisible']);
+    state.authToken = stored.authToken || null;
+    state.floatingVisible = stored.floatingButtonVisible !== false;
+    state.catVisible = stored.catVisible !== false;
+
+    ensureInlinePopup();
+    ensureFab();
+    ensureSidepanel();
+    ensureCat();
+    bindSelectionHandlers();
+
+    // Messages from popup/background
+    chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+      if (msg?.action === 'getSelectionText') {
+        const sel = window.getSelection()?.toString() || '';
+        sendResponse?.({ text: sel });
+        return true;
+      }
+      if (msg?.action === 'toggleFloatingButton') {
+        state.floatingVisible = !!msg.visible;
+        if (nodes.fab) nodes.fab.style.display = state.floatingVisible ? 'flex' : 'none';
+        sendResponse?.({ ok: true });
+        return true;
+      }
+      if (msg?.action === 'toggleCat') {
+        state.catVisible = !!msg.visible;
+        if (nodes.cat) nodes.cat.style.display = state.catVisible ? 'block' : 'none';
+        sendResponse?.({ ok: true });
+        return true;
+      }
+      if (msg?.action === 'openSidebar') {
+        openSidebarIframe();
+
+        if (nodes.fab && typeof nodes.fab._nudgeForSidebar === 'function') {
+          setTimeout(() => nodes.fab._nudgeForSidebar(), 10);
+        }
+      }
+      if (msg && msg.action === 'broadcastAuthUpdate') {
+        state.authToken = msg.token || null;
+
+        if (typeof sendResponse === 'function') {
+          try {
+            sendResponse({ ok: true });
+          } catch (err) {
+            console.warn('sendResponse failed:', err);
+          }
+        }
+
+        return true;
+      }
+
+      if (msg?.action === 'getTextFromPage') {
+        const type = msg.type || 'selection';
+        const text = type === 'fullPage' ? getFullPageText() : (window.getSelection?.().toString() || '');
+        sendResponse?.({ text: (text || '').trim() });
+        return true;
+      }
+      if (msg?.action === 'getPageUrl') {
+        try {
+          const url = window.location?.href || '';
+          sendResponse?.({ url });
+        } catch {
+          sendResponse?.({ url: '' });
+        }
+        return true;
+      }
+      if (msg?.action === 'openSidebarFromContext') {
+        openSidebarIframe();
+        sendResponse?.({ ok: true });
+        return true;
+      }
+      if (msg?.action === 'triggerFloatingHint') {
+        if (typeof msg.contextText === 'string' && msg.contextText.trim()) {
+          overlayState.contextText = msg.contextText.trim();
+        }
+
+        let rectDoc = null;
+        let anchorEl = null;
+        if (msg.anchor && typeof msg.anchor === 'object') {
+          const anchor = msg.anchor;
+          if (typeof anchor.top === 'number' && typeof anchor.left === 'number') {
+            rectDoc = {
+              top: anchor.top,
+              left: anchor.left,
+              width: typeof anchor.width === 'number' ? anchor.width : 240,
+              height: typeof anchor.height === 'number' ? anchor.height : 60,
+            };
+          }
+          if (anchor.elementSelector && typeof anchor.elementSelector === 'string') {
+            anchorEl = document.querySelector(anchor.elementSelector);
+          }
+        }
+
+        const info = getSelectionInfo();
+        if (info) {
+          if (!overlayState.contextText) {
+            overlayState.contextText = info.text;
+          }
+          rectDoc = rectDoc || info.rect;
+          anchorEl = anchorEl || info.element || null;
+          overlayState.fullSentence = info.fullSentence || info.contextText || overlayState.fullSentence || overlayState.contextText || '';
+          overlayState.maskedSentence = info.maskedSentence || overlayState.maskedSentence || info.contextText || '';
+          overlayState.maskText = info.maskText || overlayState.maskText || '';
+          overlayState.maskStart = typeof info.maskStart === 'number' ? info.maskStart : overlayState.maskStart;
+          overlayState.maskEnd = typeof info.maskEnd === 'number' ? info.maskEnd : overlayState.maskEnd;
+          overlayState.maskRect = info.maskRect || overlayState.maskRect || rectDoc || info.rect || null;
+          overlayState.anchorTextNode = info.node || overlayState.anchorTextNode;
+        }
+
+        if (rectDoc && !overlayState.maskRect) {
+          overlayState.maskRect = rectDoc;
+        }
+
+        const mode = msg.mode === 'question' || msg.mode === 'tease'
+          ? msg.mode
+          : overlayState.maskText
+            ? 'question'
+            : shouldUseQuestionMode(overlayState.fullSentence) ? 'question' : 'tease';
+
+        const reason = msg.reason || 'message';
+
+        if (rectDoc) {
+          showHintOverlay(rectDoc, mode, reason, anchorEl);
+        } else if (info) {
+          showHintOverlay(info.rect, mode, reason, info.element ?? null);
+        } else {
+          overlayState.mode = mode;
+          overlayState.reason = reason;
+          showOverlayAtViewportCenter();
+        }
+
+        sendResponse?.({ ok: true });
+        return true;
+      }
+      if (msg?.action === 'hideFloatingHint') {
+        hideHintOverlay();
+        sendResponse?.({ ok: true });
+        return true;
+      }
+      if (msg?.action === 'closeSidebar') {
+        closeSidebarIframe();
+        sendResponse?.({ status: 'sidebar closed' });
+        return true;
+      }
+      if (msg?.action === 'authUpdate') {
+        const token = typeof msg.token === 'string' ? msg.token : null;
+        const user = msg.user ?? null;
+        console.log('[content] Received authUpdate message from background', token, user);
+        state.authToken = token;
+        // 필요시 페이지로도 브로드캐스트
+        try {
+          window.postMessage({ source: AUTH_SOURCE_EXTENSION, type: AUTH_MESSAGE_TYPE, token, user }, '*');
+        } catch {}
+        sendResponse?.({ ok: true });
+        return true;
+      }
+
+      return false;
+    });
   }
 
   function getFullPageText(limit = 20000) {
@@ -1891,161 +2169,13 @@ function ensureCat() {
     return text;
   }
 
-  // ---------------------------
-  // 메시지 핸들러
-  // ---------------------------
-  chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-    // 팝업/백그라운드 → 컨텐츠 스크립트
+  function escapeHtml(s) {
+    return String(s)
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;');
+  }
 
-    if (request.action === 'toggleFloatingButton') {
-      updateFABVisibility(!!request.visible);
-      sendResponse?.({ ok: true });
-      return true;
-    }
-
-    if (request.action === 'getTextFromPage') {
-      const type = request.type || 'selection';
-      const text = type === 'fullPage' ? getFullPageText() : getSelectionText();
-      sendResponse?.({ text });
-      return true;
-    }
-
-    if (request.action === 'getPageUrl') {
-      try {
-        const url = window.location?.href || '';
-        sendResponse?.({ url });
-      } catch {
-        sendResponse?.({ url: '' });
-      }
-      return true;
-    }
-
-    if (request.action === 'openSidebarFromContext') {
-      openSidebar();
-      sendResponse?.({ ok: true });
-      return true;
-    }
-
-    if (request.action === 'triggerFloatingHint') {
-      if (typeof request.contextText === 'string' && request.contextText.trim()) {
-        overlayState.contextText = request.contextText.trim();
-      }
-
-      let rectDoc = null;
-      let anchorEl = null;
-      if (request.anchor && typeof request.anchor === 'object') {
-        const anchor = request.anchor;
-        if (
-          typeof anchor.top === 'number' &&
-          typeof anchor.left === 'number'
-        ) {
-          rectDoc = {
-            top: anchor.top,
-            left: anchor.left,
-            width: typeof anchor.width === 'number' ? anchor.width : 240,
-            height: typeof anchor.height === 'number' ? anchor.height : 60,
-          };
-        }
-        if (anchor.elementSelector && typeof anchor.elementSelector === 'string') {
-          anchorEl = document.querySelector(anchor.elementSelector);
-        }
-      }
-
-      const info = getSelectionInfo();
-      if (info) {
-        if (!overlayState.contextText) {
-          overlayState.contextText = info.text;
-        }
-        rectDoc = rectDoc || info.rect;
-        anchorEl = anchorEl || info.element || null;
-        overlayState.fullSentence = info.fullSentence || info.contextText || overlayState.fullSentence || overlayState.contextText || '';
-        overlayState.maskedSentence = info.maskedSentence || overlayState.maskedSentence || info.contextText || '';
-        overlayState.maskText = info.maskText || overlayState.maskText || '';
-        overlayState.maskStart = typeof info.maskStart === 'number' ? info.maskStart : overlayState.maskStart;
-        overlayState.maskEnd = typeof info.maskEnd === 'number' ? info.maskEnd : overlayState.maskEnd;
-        overlayState.maskRect = info.maskRect || overlayState.maskRect || rectDoc || info.rect || null;
-        overlayState.anchorTextNode = info.node || overlayState.anchorTextNode;
-      }
-
-      if (rectDoc && !overlayState.maskRect) {
-        overlayState.maskRect = rectDoc;
-      }
-
-      const mode = request.mode === 'question' || request.mode === 'tease'
-        ? request.mode
-        : overlayState.maskText
-          ? 'question'
-          : shouldUseQuestionMode(overlayState.fullSentence) ? 'question' : 'tease';
-
-      const reason = request.reason || 'message';
-
-      if (rectDoc) {
-        showHintOverlay(rectDoc, mode, reason, anchorEl);
-      } else if (info) {
-        showHintOverlay(info.rect, mode, reason, info.element ?? null);
-      } else {
-        overlayState.mode = mode;
-        overlayState.reason = reason;
-        showOverlayAtViewportCenter();
-      }
-
-      sendResponse?.({ ok: true });
-      return true;
-    }
-
-    if (request.action === 'hideFloatingHint') {
-      hideHintOverlay();
-      sendResponse?.({ ok: true });
-      return true;
-    }
-
-    if (request.action === 'closeSidebar') {
-      // ✖ 버튼 → popup.js → background.js → (여기)
-      closeSidebar();
-      sendResponse?.({ status: 'sidebar closed' });
-      return true;
-    }
-
-    if (request.action === 'authUpdate') {
-      const token = typeof request.token === 'string' ? request.token : null;
-      const user = request.user ?? null;
-      console.log('[content] Received authUpdate message from background', token)
-      syncAuthToPage(token, user);
-      sendResponse?.({ ok: true });
-      return true;
-    }
-
-    return false;
-  document.addEventListener('mousemove', (e) => {
-    if (!dragging) return;
-    const x = e.clientX - dragDX + window.scrollX;
-    const y = e.clientY - dragDY + window.scrollY;
-    img.style.left = `${x}px`;
-    img.style.top = `${y}px`;
-  });
-  document.addEventListener('mouseup', () => {
-    if (!dragging) return;
-    dragging = false;
-    img.style.transform = 'scale(1.0)';
-  });
-
-  // Toggle visibility on click (double click-ish UX)
-  let lastClick = 0;
-  img.addEventListener('click', () => {
-    const now = Date.now();
-    if (now - lastClick < 350) {
-      // double click => hide/show
-      if (img.style.display === 'none') img.style.display = 'block';
-      else img.style.display = 'none';
-    }
-    lastClick = now;
-  });
-}
-
-/** ---------- Utils ---------- **/
-function escapeHtml(s) {
-  return String(s)
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;');
-}
+  // Kick off
+  init();
+})();
