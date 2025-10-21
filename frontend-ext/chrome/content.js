@@ -45,6 +45,7 @@
     fullSentence: '',
     maskedSentence: '',
     maskText: '',
+    maskRawText: '',
     usageCount: 0,
     loadingLevel: null,
     hintPreview: '',
@@ -70,29 +71,27 @@
     answerModelAnswer: null,
     isCheckingAnswer: false,
     locked: false,
+    maskSpanEl: null, // <-- 마스크로 감싼 <span> 참조
+    answerExpanded: false,
+    positionLocked: false,
   };
 
   const overlayElements = {
     cover: null,
-    coverInner: null,
-    coverPrompt: null,
-    coverInput: null,
     helper: null,
-    linesContainer: null,
-    preview: null,
-    previewWrapper: null,
-    usage: null,
+    statementSummary: null,
+    statementSentence: null,
+    hintPreview: null,
     actions: null,
-    closeBtn: null,
-    character: null,
-    questionContainer: null,
-    questionText: null,
+    answerToggle: null,
     answerContainer: null,
+    answerInput: null,
     answerButton: null,
     answerHint: null,
     answerFeedback: null,
     answerScore: null,
     answerReference: null,
+    closeBtn: null,
   };
 
   let overlayPositionRaf = null;
@@ -313,24 +312,136 @@
     const maskRect = measureSubstringRect(node, maskStart, maskEnd) || fallbackRect;
     if (!maskRect) return null;
 
-    const maskTextRaw = rawText.slice(maskStart, maskEnd);
-    const maskText = maskTextRaw.trim();
-    if (!normalizeText(maskText)) return null;
+    const maskRawText = rawText.slice(maskStart, maskEnd);
+    const maskText = normalizeText(maskRawText);
+    if (!maskText) return null;
 
     const maskedSentenceCore =
       coreText.slice(0, maskStartInCore) + ' _____ ' + coreText.slice(maskEndInCore);
-    const fullSentence = rawText.trim();
+    const fullSentence = normalizeText(rawText) || rawText.trim();
     const maskedSentence = maskedSentenceCore.trim();
 
     return {
       maskRect,
       maskText,
+      maskRawText,
       maskedSentence,
       fullSentence,
       maskStart,
       maskEnd,
     };
   }
+
+  // === 텍스트 범위를 <span class="chatterpals-mask">로 감싼다 ===
+function applyMaskSpan(node, startOffset, endOffset) {
+  try {
+    if (!node || startOffset == null || endOffset == null || endOffset <= startOffset) return null;
+    const originalSegment = node.textContent?.slice(startOffset, endOffset) ?? '';
+    const range = document.createRange();
+    range.setStart(node, startOffset);
+    range.setEnd(node, endOffset);
+
+    const frag = range.extractContents();
+    const span = document.createElement('span');
+    span.className = 'chatterpals-mask';
+    span.appendChild(frag);
+    if (originalSegment) {
+      const maskVisual = originalSegment.replace(/\S/g, '_');
+      span.dataset.mask = maskVisual;
+      span.dataset.original = originalSegment;
+      if (!overlayState.maskRawText) {
+        overlayState.maskRawText = originalSegment;
+      }
+    }
+
+    range.insertNode(span);
+    // 커서가 span 앞뒤로 박히는 부작용 방지
+    range.detach?.();
+    return span;
+  } catch (err) {
+    console.warn('applyMaskSpan failed:', err);
+    return null;
+  }
+}
+
+// === 마스크된 모든 <span>을 원문으로 되돌린다 ===
+function removeMaskSpan() {
+  try {
+    const masks = document.querySelectorAll('.chatterpals-mask');
+    masks.forEach((span) => {
+      const p = span.parentNode;
+      if (!p) return;
+      while (span.firstChild) p.insertBefore(span.firstChild, span);
+      p.removeChild(span);
+    });
+  } catch (e) {
+    console.warn('removeMaskSpan failed:', e);
+  }
+}
+
+function ensureMaskSpan() {
+  if (overlayState.maskSpanEl && document.contains(overlayState.maskSpanEl)) {
+    return overlayState.maskSpanEl;
+  }
+
+  if (!overlayState.anchorElement || !document.contains(overlayState.anchorElement)) {
+    const reAnchored = reAnchorUsingSignature();
+    if (!reAnchored) return null;
+  }
+
+  const hiddenRaw = overlayState.maskRawText || '';
+  const hiddenDisplay = overlayState.maskText || '';
+  const textNode = resolveAnchorTextNode();
+  if (!textNode || textNode.nodeType !== Node.TEXT_NODE) return null;
+
+  let start = overlayState.maskStart ?? -1;
+  let end = overlayState.maskEnd ?? -1;
+  const raw = textNode.textContent || '';
+
+  if (start < 0 || end <= start || end > raw.length) {
+    let segment = hiddenRaw || hiddenDisplay;
+    if (!segment) return null;
+    let idx = raw.indexOf(segment);
+    if (idx < 0 && hiddenDisplay && hiddenDisplay !== segment) {
+      idx = raw.indexOf(hiddenDisplay);
+    }
+    if (idx < 0) return null;
+    start = idx;
+    end = idx + segment.length;
+    overlayState.maskStart = start;
+    overlayState.maskEnd = end;
+    if (!hiddenRaw) {
+      overlayState.maskRawText = raw.slice(start, end);
+    }
+  }
+
+    const span = applyMaskSpan(textNode, start, end);
+    if (span) {
+      overlayState.maskSpanEl = span;
+      overlayState.anchorElement = span.parentElement ? span.parentElement : overlayState.anchorElement;
+      overlayState.maskRect = null;
+      const original = overlayState.maskRawText || span.textContent || '';
+    if (original) {
+      span.dataset.mask = original.replace(/\S/g, '_');
+      span.dataset.original = original;
+    }
+    refreshMaskRect();
+  }
+  return span;
+}
+
+function revealMaskSpan(span) {
+  if (!span) return;
+  span.classList.add('revealed');
+}
+
+function concealMaskSpan(span) {
+  if (!span) return;
+  if (span.dataset && span.dataset.original) {
+    span.dataset.mask = span.dataset.original.replace(/\S/g, '_');
+  }
+  span.classList.remove('revealed');
+}
 
   function resolveAnchorTextNode() {
     if (
@@ -361,6 +472,35 @@
   }
 
   function refreshMaskRect() {
+      // 1) 마스크 span이 있으면 그 위치를 1순위로 사용
+      if (overlayState.maskSpanEl && document.contains(overlayState.maskSpanEl)) {
+        const rects = overlayState.maskSpanEl.getClientRects?.();
+        let union = null;
+        if (rects && rects.length) {
+          let minL=Infinity,minT=Infinity,maxR=-Infinity,maxB=-Infinity;
+          for (const r of rects) {
+            if (!r || (r.width===0 && r.height===0)) continue;
+            minL = Math.min(minL, r.left);
+            minT = Math.min(minT, r.top);
+            maxR = Math.max(maxR, r.right);
+            maxB = Math.max(maxB, r.bottom);
+          }
+          if (isFinite(minL) && isFinite(minT)) {
+            union = { left: minL, top: minT, width: Math.max(1, maxR-minL), height: Math.max(1, maxB-minT) };
+          }
+        }
+        const base = union || overlayState.maskSpanEl.getBoundingClientRect?.();
+        if (base && !(base.width===0 && base.height===0)) {
+          overlayState.maskRect = {
+            top: base.top + window.scrollY,
+            left: base.left + window.scrollX,
+            width: base.width,
+            height: base.height,
+          };
+          return;
+        }
+      }
+
     const textNode = resolveAnchorTextNode();
     if (!textNode) {
       overlayState.maskRect = overlayState.anchorRect;
@@ -376,13 +516,16 @@
       rect = measureSubstringRect(textNode, overlayState.maskStart, overlayState.maskEnd);
     }
 
-    if (!rect && overlayState.maskText) {
-      const raw = textNode.textContent || '';
-      const index = raw.indexOf(overlayState.maskText);
-      if (index !== -1) {
-        overlayState.maskStart = index;
-        overlayState.maskEnd = index + overlayState.maskText.length;
-        rect = measureSubstringRect(textNode, overlayState.maskStart, overlayState.maskEnd);
+    if (!rect) {
+      const rawSegment = overlayState.maskRawText || overlayState.maskText;
+      if (rawSegment) {
+        const raw = textNode.textContent || '';
+        const index = raw.indexOf(rawSegment);
+        if (index !== -1) {
+          overlayState.maskStart = index;
+          overlayState.maskEnd = index + rawSegment.length;
+          rect = measureSubstringRect(textNode, overlayState.maskStart, overlayState.maskEnd);
+        }
       }
     }
 
@@ -405,6 +548,7 @@
   const rawText = node.textContent || '';
   const normalized = normalizeText(rawText);
   if (!normalized || normalized.length < MIN_SENTENCE_LENGTH) return null;
+  if (isLikelyNoiseText(normalized)) return null;
 
   const rect = measureTextNodeRect(node);
   if (!rect) return null;
@@ -420,6 +564,7 @@
     node,
     maskRect: maskInfo.maskRect,
     maskText: maskInfo.maskText,
+    maskRawText: maskInfo.maskRawText,
     maskedSentence: maskInfo.maskedSentence,
     fullSentence: maskInfo.fullSentence,
     maskStart: maskInfo.maskStart,
@@ -495,6 +640,46 @@
     return (text || '').replace(/\s+/g, ' ').trim();
   }
 
+  const NOISE_KEYWORDS = ['광고', '제휴', '쿠폰', 'sponsored', 'sponsor', 'promotion', 'promo', '후원', '주식회사', '(주)', '㈜'];
+
+  function isLikelyNoiseText(text) {
+    const trimmed = text.trim();
+    if (!trimmed) return true;
+    if (trimmed.length < MIN_SENTENCE_LENGTH) return true;
+
+    if (NOISE_KEYWORDS.some((keyword) => trimmed.includes(keyword))) {
+      return true;
+    }
+
+    const wordCount = trimmed.split(/\s+/).length;
+    const hasSentencePunctuation = /[.!?…]/.test(trimmed);
+    if (wordCount < 6 && !hasSentencePunctuation) {
+      return true;
+    }
+
+    const hangulMatches = trimmed.match(/[ㄱ-힝]/g) || [];
+    const letterMatches = trimmed.match(/[A-Za-zㄱ-힝]/g) || [];
+    if (hangulMatches.length > 0) {
+      const hangulRatio = hangulMatches.length / trimmed.length;
+      if (hangulRatio < 0.25 && !hasSentencePunctuation) {
+        return true;
+      }
+    } else if (letterMatches.length > 0) {
+      const upperLetters = (trimmed.match(/[A-Z]/g) || []).length;
+      if (upperLetters / letterMatches.length > 0.7 && !hasSentencePunctuation) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  function getMaskedCharCount() {
+    const raw = overlayState.maskRawText || overlayState.maskText || '';
+    if (!raw) return 0;
+    return raw.replace(/\s/g, '').length;
+  }
+
   function createAnchorSignature(element) {
     const resolved = resolveAnchorElement(element);
     if (!resolved) return null;
@@ -542,7 +727,7 @@ function cleanupAnchorSignature() {
   }
 
   function containsHangul(text) {
-    return /[\u3131-\uD79D]/.test(text || '');
+    return /[ㄱ-힝]/.test(text || '');
   }
 
   function reAnchorUsingSignature() {
@@ -556,15 +741,15 @@ function cleanupAnchorSignature() {
       if (byId) {
         overlayState.anchorElement = byId;
         overlayState.anchorRect = computeAnchorRect(byId, overlayState.anchorRect);
-        overlayState.anchorSignature = {
-          ...signature,
-          text: normalizeText(byId.textContent || '').slice(0, 160),
-          tag: byId.tagName,
-        };
-        refreshMaskRect();
-        setupAnchorObservers(byId);
-        return true;
-      }
+          overlayState.anchorSignature = {
+            ...signature,
+            text: normalizeText(byId.textContent || '').slice(0, 160),
+            tag: byId.tagName,
+          };
+          refreshMaskRect();
+          cleanupAnchorObservers();
+          return true;
+        }
     }
 
     if (!signature.text) {
@@ -589,7 +774,7 @@ function cleanupAnchorSignature() {
         tag: match.tagName,
       };
       refreshMaskRect();
-      setupAnchorObservers(match);
+      cleanupAnchorObservers();
       return true;
     }
 
@@ -683,91 +868,45 @@ function cleanupAnchorSignature() {
       const cover = document.createElement('div');
       cover.id = 'chatterpals-hint-cover';
       cover.className = 'chatterpals-hint-cover';
-      cover.addEventListener('click', (event) => {
-        event.stopPropagation();
-      });
-
-      const coverInner = document.createElement('div');
-      coverInner.className = 'chatterpals-cover-inner';
-
-      const coverPrompt = document.createElement('div');
-      coverPrompt.className = 'chatterpals-cover-prompt';
-      coverInner.appendChild(coverPrompt);
-
-      const coverInput = document.createElement('textarea');
-      coverInput.className = 'chatterpals-cover-input';
-      coverInput.placeholder = 'Type your answer in English';
-      coverInput.rows = 2;
-      coverInput.addEventListener('input', () => {
-        overlayState.answerText = coverInput.value;
-        overlayState.answerFeedback = null;
-        overlayState.answerIsCorrect = null;
-        overlayState.answerScore = null;
-        overlayState.answerModelAnswer = null;
-        renderOverlayContent();
-      });
-      coverInput.addEventListener('keydown', (event) => {
-        if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
-          event.preventDefault();
-          void gradeCurrentAnswer();
-        }
-      });
-      coverInner.appendChild(coverInput);
-
-      cover.appendChild(coverInner);
-
       overlayElements.cover = cover;
-      overlayElements.coverInner = coverInner;
-      overlayElements.coverPrompt = coverPrompt;
-      overlayElements.coverInput = coverInput;
     }
 
     if (!overlayElements.helper) {
       const helper = document.createElement('div');
-      helper.id = 'chatterpals-hint-helper';
-      helper.className = 'chatterpals-hint-helper';
+      helper.id = 'chatterpals-inline-toolbar';
+      helper.className = 'chatterpals-inline-toolbar';
+      helper.addEventListener('mousedown', (event) => {
+        event.stopPropagation();
+      });
+      helper.addEventListener('click', (event) => {
+        event.stopPropagation();
+      });
 
-      const character = document.createElement('div');
-      character.className = 'chatterpals-hint-character';
-      character.textContent = '😜';
-
-      const bubble = document.createElement('div');
-      bubble.className = 'chatterpals-hint-bubble';
-      bubble.setAttribute('role', 'dialog');
-      bubble.setAttribute('aria-live', 'polite');
+      const summary = document.createElement('div');
+      summary.className = 'chatterpals-toolbar-summary';
+      helper.appendChild(summary);
 
       const closeBtn = document.createElement('button');
       closeBtn.type = 'button';
-      closeBtn.className = 'chatterpals-hint-close';
-      closeBtn.setAttribute('aria-label', 'Close hint');
+      closeBtn.className = 'chatterpals-toolbar-close';
+      closeBtn.setAttribute('aria-label', '창 닫기');
       closeBtn.textContent = '×';
-      closeBtn.addEventListener('click', () => {
+      closeBtn.addEventListener('click', (event) => {
+        event.stopPropagation();
         hideHintOverlay();
       });
+      helper.appendChild(closeBtn);
 
-      const questionContainer = document.createElement('div');
-      questionContainer.className = 'chatterpals-question hidden';
-      const questionLabel = document.createElement('span');
-      questionLabel.className = 'chatterpals-question-label';
-      questionLabel.textContent = 'Sentence with blank';
-      const questionText = document.createElement('p');
-      questionText.className = 'chatterpals-question-text';
-      questionContainer.appendChild(questionLabel);
-      questionContainer.appendChild(questionText);
+      const sentence = document.createElement('div');
+      sentence.className = 'chatterpals-toolbar-sentence';
+      helper.appendChild(sentence);
 
-      const linesContainer = document.createElement('div');
-      linesContainer.className = 'chatterpals-hint-lines';
-
-      const previewWrapper = document.createElement('div');
-      previewWrapper.className = 'chatterpals-hint-preview hidden';
-      const preview = document.createElement('pre');
-      previewWrapper.appendChild(preview);
-
-      const usage = document.createElement('p');
-      usage.className = 'chatterpals-hint-usage hidden';
+      const hintPreview = document.createElement('div');
+      hintPreview.className = 'chatterpals-toolbar-hint hidden';
+      helper.appendChild(hintPreview);
 
       const actions = document.createElement('div');
-      actions.className = 'chatterpals-hint-actions';
+      actions.className = 'chatterpals-toolbar-actions chatterpals-hint-actions';
 
       HINT_ACTIONS.forEach((action) => {
         const btn = document.createElement('button');
@@ -781,82 +920,94 @@ function cleanupAnchorSignature() {
         actions.appendChild(btn);
       });
 
+      const answerToggle = document.createElement('button');
+      answerToggle.type = 'button';
+      answerToggle.className = 'chatterpals-toolbar-answer-toggle';
+      answerToggle.textContent = '답변창 열기';
+      answerToggle.addEventListener('click', (event) => {
+        event.stopPropagation();
+        overlayState.answerExpanded = !overlayState.answerExpanded;
+        renderOverlayContent();
+        if (overlayState.answerExpanded) {
+          window.setTimeout(() => {
+            overlayElements.answerInput?.focus();
+          }, 30);
+        }
+      });
+      actions.appendChild(answerToggle);
+
+      helper.appendChild(actions);
+
       const answerContainer = document.createElement('div');
-      answerContainer.className = 'chatterpals-answer hidden';
+      answerContainer.className = 'chatterpals-toolbar-answer chatterpals-answer hidden';
+
+      const answerInput = document.createElement('textarea');
+      answerInput.className = 'chatterpals-answer-input';
+      answerInput.placeholder = 'Type your answer in English';
+      answerInput.rows = 3;
+      answerInput.addEventListener('input', () => {
+        overlayState.answerText = answerInput.value;
+        overlayState.answerFeedback = null;
+        overlayState.answerIsCorrect = null;
+        overlayState.answerScore = null;
+        overlayState.answerModelAnswer = null;
+        renderOverlayContent();
+      });
+      answerInput.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
+          event.preventDefault();
+          void gradeCurrentAnswer();
+        }
+      });
+      answerContainer.appendChild(answerInput);
 
       const answerControls = document.createElement('div');
       answerControls.className = 'chatterpals-answer-controls';
 
       const answerHint = document.createElement('span');
       answerHint.className = 'chatterpals-answer-hint';
-      answerHint.textContent = 'Type your answer in English here';
+      answerControls.appendChild(answerHint);
 
       const answerButton = document.createElement('button');
       answerButton.type = 'button';
       answerButton.className = 'chatterpals-answer-submit';
-      answerButton.textContent = 'Check Answer';
+      answerButton.textContent = '답변 확인';
       answerButton.addEventListener('click', (event) => {
         event.stopPropagation();
         void gradeCurrentAnswer();
       });
-
-      answerControls.appendChild(answerHint);
       answerControls.appendChild(answerButton);
+
+      answerContainer.appendChild(answerControls);
 
       const answerFeedback = document.createElement('p');
       answerFeedback.className = 'chatterpals-answer-feedback hidden';
+      answerContainer.appendChild(answerFeedback);
 
       const answerScore = document.createElement('p');
       answerScore.className = 'chatterpals-answer-score hidden';
+      answerContainer.appendChild(answerScore);
 
       const answerReference = document.createElement('p');
       answerReference.className = 'chatterpals-answer-reference hidden';
-
-      answerContainer.appendChild(answerControls);
-      answerContainer.appendChild(answerFeedback);
-      answerContainer.appendChild(answerScore);
       answerContainer.appendChild(answerReference);
 
-      bubble.appendChild(closeBtn);
-      bubble.appendChild(questionContainer);
-      bubble.appendChild(linesContainer);
-      bubble.appendChild(previewWrapper);
-      bubble.appendChild(usage);
-      bubble.appendChild(actions);
-      bubble.appendChild(answerContainer);
-
-      helper.appendChild(character);
-      helper.appendChild(bubble);
-
-      helper.addEventListener('mousedown', (event) => {
-        event.stopPropagation();
-      });
-      helper.addEventListener('click', (event) => {
-        event.stopPropagation();
-      });
-      helper.addEventListener('mouseenter', () => {
-        overlayState.locked = true;
-      });
-      helper.addEventListener('mouseleave', () => {
-        overlayState.locked = false;
-      });
+      helper.appendChild(answerContainer);
 
       overlayElements.helper = helper;
-      overlayElements.character = character;
-      overlayElements.linesContainer = linesContainer;
-      overlayElements.previewWrapper = previewWrapper;
-      overlayElements.preview = preview;
-      overlayElements.usage = usage;
+      overlayElements.statementSummary = summary;
+      overlayElements.statementSentence = sentence;
+      overlayElements.hintPreview = hintPreview;
       overlayElements.actions = actions;
-      overlayElements.closeBtn = closeBtn;
-      overlayElements.questionContainer = questionContainer;
-      overlayElements.questionText = questionText;
+      overlayElements.answerToggle = answerToggle;
       overlayElements.answerContainer = answerContainer;
-      overlayElements.answerButton = answerButton;
+      overlayElements.answerInput = answerInput;
       overlayElements.answerHint = answerHint;
+      overlayElements.answerButton = answerButton;
       overlayElements.answerFeedback = answerFeedback;
       overlayElements.answerScore = answerScore;
       overlayElements.answerReference = answerReference;
+      overlayElements.closeBtn = closeBtn;
     }
   }
 
@@ -869,6 +1020,7 @@ function cleanupAnchorSignature() {
     }
   }
 
+
   function renderOverlayContent() {
     if (!overlayState.visible) return;
     ensureOverlayElements();
@@ -876,49 +1028,37 @@ function cleanupAnchorSignature() {
     const helper = overlayElements.helper;
     if (!helper) return;
 
-    helper.classList.toggle('mode-question', overlayState.mode === 'question');
-    helper.classList.toggle('mode-tease', overlayState.mode !== 'question');
-    if (overlayElements.character) {
-      overlayElements.character.textContent = overlayState.mode === 'question' ? '🤔' : '😜';
+    const hiddenCount = getMaskedCharCount();
+    const baseSummary = overlayState.playfulRemark || (hiddenCount
+      ? `문장 전체를 참고해 하이라이트된 ${hiddenCount}자 표현을 자연스러운 영어로 바꿔보세요.`
+      : '문장 전체를 참고해 하이라이트된 표현을 자연스러운 영어로 바꿔보세요.');
+    const usageSuffix = overlayState.usageCount > 0 ? ` · 힌트 사용 ${overlayState.usageCount}회` : '';
+    if (overlayElements.statementSummary) {
+      overlayElements.statementSummary.textContent = baseSummary + usageSuffix;
     }
 
-    if (overlayElements.linesContainer) {
-      overlayElements.linesContainer.innerHTML = '';
-      const lines = overlayState.playfulRemark
-        ? [overlayState.playfulRemark]
-        : overlayState.lines;
-      lines.forEach((line) => {
-        const p = document.createElement('p');
-        p.textContent = line;
-        overlayElements.linesContainer.appendChild(p);
-      });
+    const sentenceText = overlayState.maskedSentence || overlayState.contextText || '';
+    if (overlayElements.statementSentence) {
+      overlayElements.statementSentence.textContent = sentenceText;
+      overlayElements.statementSentence.classList.toggle('hidden', !sentenceText);
     }
 
-    if (overlayElements.previewWrapper && overlayElements.preview) {
+    if (overlayElements.hintPreview) {
       if (overlayState.hintPreview) {
-        overlayElements.previewWrapper.classList.remove('hidden');
-        overlayElements.preview.textContent = overlayState.hintPreview;
+        overlayElements.hintPreview.textContent = overlayState.hintPreview;
+        overlayElements.hintPreview.classList.remove('hidden');
       } else {
-        overlayElements.previewWrapper.classList.add('hidden');
-        overlayElements.preview.textContent = '';
-      }
-    }
-
-    if (overlayElements.usage) {
-      if (overlayState.usageCount > 0) {
-        overlayElements.usage.classList.remove('hidden');
-        overlayElements.usage.textContent = `Hints used: ${overlayState.usageCount}`;
-      } else {
-        overlayElements.usage.classList.add('hidden');
-        overlayElements.usage.textContent = '';
+        overlayElements.hintPreview.textContent = '';
+        overlayElements.hintPreview.classList.add('hidden');
       }
     }
 
     if (overlayElements.actions) {
-      const buttons = overlayElements.actions.querySelectorAll('button');
+      const buttons = overlayElements.actions.querySelectorAll('button[data-level]');
       buttons.forEach((btn) => {
         const level = btn.dataset.level;
-        if (level && overlayState.loadingLevel === level) {
+        if (!level) return;
+        if (overlayState.loadingLevel === level) {
           btn.disabled = true;
           btn.textContent = '…';
         } else {
@@ -929,107 +1069,71 @@ function cleanupAnchorSignature() {
       });
     }
 
-    if (overlayElements.coverPrompt) {
-      const promptVisible = overlayState.mode === 'question';
-      overlayElements.coverPrompt.classList.toggle('hidden', !promptVisible);
-      if (promptVisible) {
-        const maskInfo = overlayState.maskText
-          ? ` (hidden ${overlayState.maskText.length} chars)`
-          : '';
-        const promptSuffix = maskInfo ? ` ${maskInfo}` : '';
-        overlayElements.coverPrompt.textContent = `Type your answer in English${promptSuffix} (Ctrl+Enter to submit)`.trim();
-      } else {
-        overlayElements.coverPrompt.textContent = '';
-      }
-    }
-
-    if (overlayElements.coverInput) {
-      const inputVisible = overlayState.mode === 'question';
-      overlayElements.coverInput.classList.toggle('hidden', !inputVisible);
-      if (inputVisible) {
-        if (overlayElements.coverInput.value !== overlayState.answerText) {
-          const { selectionStart, selectionEnd } = overlayElements.coverInput;
-          overlayElements.coverInput.value = overlayState.answerText;
-          if (document.activeElement === overlayElements.coverInput) {
-            overlayElements.coverInput.setSelectionRange(selectionStart, selectionEnd);
-          }
-        }
-        overlayElements.coverInput.disabled = overlayState.isCheckingAnswer;
-      } else {
-        overlayElements.coverInput.value = '';
-      }
-    }
-
-    if (overlayElements.questionContainer && overlayElements.questionText) {
-      let questionText = '';
-      const sentence =
-        overlayState.maskedSentence || overlayState.fullSentence || overlayState.contextText;
-      if (containsHangul(sentence)) {
-        const lengthInfo = overlayState.maskText ? `Hidden Korean expression length: ${overlayState.maskText.length}` : 'Hidden Korean expression';
-        questionText = `${lengthInfo}. Translate it into natural English.`;
-      } else if (sentence) {
-        questionText = sentence;
-      }
-      const hasQuestion = Boolean(questionText);
-      overlayElements.questionContainer.classList.toggle('hidden', !hasQuestion);
-      overlayElements.questionText.textContent = hasQuestion ? questionText : '';
+    if (overlayElements.answerToggle) {
+      overlayElements.answerToggle.disabled = overlayState.isCheckingAnswer;
+      overlayElements.answerToggle.textContent = overlayState.answerExpanded ? '답변창 닫기' : '답변창 열기';
     }
 
     if (overlayElements.answerContainer) {
-      const showAnswer = overlayState.mode === 'question';
-      overlayElements.answerContainer.classList.toggle('hidden', !showAnswer);
-      if (showAnswer) {
-        if (overlayElements.answerButton) {
-          overlayElements.answerButton.disabled =
-            overlayState.isCheckingAnswer || !overlayState.answerText.trim();
-          overlayElements.answerButton.textContent = overlayState.isCheckingAnswer
-            ? 'Checking...'
-            : 'Check Answer';
-        }
-        if (overlayElements.answerHint) {
-          const lengthInfo = overlayState.maskText ? ` (hidden ${overlayState.maskText.length} chars)` : '';
-          overlayElements.answerHint.textContent = overlayState.isCheckingAnswer
-            ? 'Checking...'
-            : `Answer in English${lengthInfo}`;
-          overlayElements.answerHint.classList.toggle('hidden', overlayState.isCheckingAnswer);
-        }
-        if (overlayElements.answerFeedback) {
-          if (overlayState.answerFeedback) {
-            overlayElements.answerFeedback.textContent = overlayState.answerFeedback;
-            overlayElements.answerFeedback.classList.remove('hidden');
-            overlayElements.answerFeedback.classList.toggle(
-              'is-correct',
-              overlayState.answerIsCorrect === true,
-            );
-            overlayElements.answerFeedback.classList.toggle(
-              'is-incorrect',
-              overlayState.answerIsCorrect === false,
-            );
-          } else {
-            overlayElements.answerFeedback.textContent = '';
-            overlayElements.answerFeedback.classList.add('hidden');
-            overlayElements.answerFeedback.classList.remove('is-correct', 'is-incorrect');
-          }
-        }
-        if (overlayElements.answerScore) {
-          if (typeof overlayState.answerScore === 'number') {
-            const percent = Math.round(overlayState.answerScore * 100);
-            overlayElements.answerScore.textContent = `Score: ${percent}%`;
-            overlayElements.answerScore.classList.remove('hidden');
-          } else {
-            overlayElements.answerScore.textContent = '';
-            overlayElements.answerScore.classList.add('hidden');
-          }
-        }
-        if (overlayElements.answerReference) {
-          if (overlayState.answerModelAnswer) {
-            overlayElements.answerReference.textContent = `Model answer: ${overlayState.answerModelAnswer}`;
-            overlayElements.answerReference.classList.remove('hidden');
-          } else {
-            overlayElements.answerReference.textContent = '';
-            overlayElements.answerReference.classList.add('hidden');
-          }
-        }
+      overlayElements.answerContainer.classList.toggle('hidden', !overlayState.answerExpanded);
+    }
+
+    if (overlayElements.answerInput) {
+      if (overlayElements.answerInput.value !== overlayState.answerText) {
+        overlayElements.answerInput.value = overlayState.answerText;
+      }
+      overlayElements.answerInput.disabled = overlayState.isCheckingAnswer;
+    }
+
+    if (overlayElements.answerHint) {
+      overlayElements.answerHint.textContent = overlayState.isCheckingAnswer
+        ? '채점 중입니다...'
+        : `영어로 답변을 입력하세요${hiddenCount ? ` (숨긴 ${hiddenCount}자)` : ''}`;
+      overlayElements.answerHint.classList.toggle('hidden', overlayState.isCheckingAnswer);
+    }
+
+    if (overlayElements.answerButton) {
+      overlayElements.answerButton.disabled =
+        overlayState.isCheckingAnswer || !overlayState.answerText.trim();
+      overlayElements.answerButton.textContent = overlayState.isCheckingAnswer
+        ? '채점 중...'
+        : '답변 확인';
+    }
+
+    if (overlayElements.answerFeedback) {
+      if (overlayState.answerFeedback) {
+        overlayElements.answerFeedback.textContent = overlayState.answerFeedback;
+        overlayElements.answerFeedback.classList.remove('hidden');
+        overlayElements.answerFeedback.classList.toggle('is-correct', overlayState.answerIsCorrect === true);
+        overlayElements.answerFeedback.classList.toggle('is-incorrect', overlayState.answerIsCorrect === false);
+      } else {
+        overlayElements.answerFeedback.textContent = '';
+        overlayElements.answerFeedback.classList.add('hidden');
+        overlayElements.answerFeedback.classList.remove('is-correct', 'is-incorrect');
+      }
+    }
+
+    if (overlayElements.answerScore) {
+      if (typeof overlayState.answerScore === 'number') {
+        const percent = Math.round(overlayState.answerScore * 100);
+        overlayElements.answerScore.textContent = `점수: ${percent}%`;
+        overlayElements.answerScore.classList.remove('hidden');
+      } else {
+        overlayElements.answerScore.textContent = '';
+        overlayElements.answerScore.classList.add('hidden');
+      }
+    }
+
+    if (overlayElements.answerReference) {
+      if (overlayState.answerModelAnswer) {
+        overlayElements.answerReference.textContent = `Model answer: ${overlayState.answerModelAnswer}`;
+        overlayElements.answerReference.classList.remove('hidden');
+      } else if (overlayState.maskRawText) {
+        overlayElements.answerReference.textContent = `원문 표현 (한국어): ${overlayState.maskRawText} · 영어로 자연스럽게 번역해 보세요.`;
+        overlayElements.answerReference.classList.remove('hidden');
+      } else {
+        overlayElements.answerReference.textContent = '';
+        overlayElements.answerReference.classList.add('hidden');
       }
     }
   }
@@ -1087,8 +1191,8 @@ function cleanupAnchorSignature() {
         if (typeof raw !== 'string') return null;
         raw = raw.trim();
         if (!raw) return null;
-        if (containsHangul(raw) && hiddenExpression) {
-          return `Expected in English: ${hiddenExpression}`;
+        if (containsHangul(raw) && hiddenAnswer) {
+          return `Expected in English: ${hiddenAnswer}`;
         }
         return raw;
       })();
@@ -1107,6 +1211,7 @@ function cleanupAnchorSignature() {
       overlayState.answerModelAnswer = null;
     } finally {
       overlayState.isCheckingAnswer = false;
+    overlayState.positionLocked = false;
       renderOverlayContent();
     }
   }
@@ -1168,18 +1273,29 @@ function cleanupAnchorSignature() {
     cover.style.width = `${highlightWidth}px`;
     cover.style.height = `${highlightHeight}px`;
 
-    const helperCenterX = highlightLeft + highlightWidth / 2;
-    const helperOffsetAbove = highlightTop - 16;
-    let helperTop = helperOffsetAbove;
+    const scrollX = window.scrollX;
+    const scrollY = window.scrollY;
+    const helperWidth = helper.offsetWidth || 0;
+    const helperHeight = helper.offsetHeight || 0;
+    let toolbarLeft = highlightLeft + scrollX;
+    let toolbarTop = highlightTop + scrollY - helperHeight - 12;
     let helperPosition = 'above';
-    if (helperTop < 16) {
-      helperTop = highlightTop + highlightHeight + 16;
+
+    if (toolbarTop < scrollY + 8) {
+      toolbarTop = highlightTop + scrollY + highlightHeight + 12;
       helperPosition = 'below';
     }
 
-    helper.style.left = `${helperCenterX}px`;
-    helper.style.top = `${helperTop}px`;
+    const maxLeft = scrollX + viewportWidth - helperWidth - 8;
+    toolbarLeft = Math.max(scrollX + 8, Math.min(toolbarLeft, maxLeft));
+
+    const maxTop = scrollY + viewportHeight - helperHeight - 8;
+    toolbarTop = Math.max(scrollY + 8, Math.min(toolbarTop, maxTop));
+
+    helper.style.left = `${toolbarLeft}px`;
+    helper.style.top = `${toolbarTop}px`;
     helper.dataset.position = helperPosition;
+    overlayState.positionLocked = true;
   }
 
   function updateOverlayPosition() {
@@ -1196,6 +1312,7 @@ function cleanupAnchorSignature() {
     overlayState.reason = reason;
     overlayState.lines = mode === 'question' ? [...QUESTION_LINES] : [...TEASE_LINES];
     overlayState.playfulRemark = '';
+    overlayState.answerExpanded = false;
     overlayState.loadingLevel = null;
     overlayState.hintPreview = '';
     overlayState.answerText = '';
@@ -1204,6 +1321,7 @@ function cleanupAnchorSignature() {
     overlayState.answerScore = null;
     overlayState.answerModelAnswer = null;
     overlayState.isCheckingAnswer = false;
+    overlayState.positionLocked = false;
     const previousAnchor = overlayState.anchorElement;
     const resolvedAnchor = resolveAnchorElement(anchorElement);
     if (previousAnchor && previousAnchor !== resolvedAnchor) {
@@ -1215,7 +1333,7 @@ function cleanupAnchorSignature() {
     overlayState.anchorRect = computeAnchorRect(resolvedAnchor, rectDoc);
     if (overlayState.anchorElement) {
       refreshMaskRect();
-      setupAnchorObservers(overlayState.anchorElement);
+      cleanupAnchorObservers();
     } else {
       cleanupAnchorObservers();
     }
@@ -1234,19 +1352,25 @@ function cleanupAnchorSignature() {
 
     updateOverlayPosition();
     renderOverlayContent();
-    if (overlayState.mode === 'question') {
+    if (overlayState.mode === 'question' && overlayState.answerExpanded) {
       window.setTimeout(() => {
-        overlayElements.coverInput?.focus();
+        overlayElements.answerInput?.focus();
       }, 120);
     }
   }
 
   function hideHintOverlay() {
+    // 감싼 마스크 전부 제거하고 상태 초기화
+    removeMaskSpan();
+    overlayState.maskSpanEl = null;
+
     overlayState.visible = false;
     overlayState.contextText = '';
     overlayState.fullSentence = '';
     overlayState.maskedSentence = '';
     overlayState.maskText = '';
+    overlayState.maskRawText = '';
+    overlayState.answerExpanded = false;
     cleanupAnchorObservers();
     cleanupAnchorSignature();
     overlayState.answerText = '';
@@ -1328,16 +1452,25 @@ function cleanupAnchorSignature() {
     const maskedSentence = overlayState.maskedSentence || sentence;
     const hiddenExpression = overlayState.maskText || '';
 
+    overlayState.answerModelAnswer = null;
+    const currentMask = ensureMaskSpan();
+
     if (!sentence || overlayState.loadingLevel) return;
 
     if (level === 'translation') {
-      overlayState.hintPreview = sentence;
-      overlayState.playfulRemark = '원문 한국어 문장을 보여줄게요.';
-      overlayState.lines = ['원문 한국어 문장을 보여줄게요.'];
+      overlayState.hintPreview = `원문 문장: ${sentence}`;
+      overlayState.playfulRemark = '숨긴 표현이 포함된 전체 문장을 보여드릴게요.';
+      overlayState.lines = [
+        '숨긴 표현이 포함된 원문 전체 문장을 보여드릴게요.',
+        '하이라이트된 구간이 바로 빈칸에 해당하는 표현입니다.',
+      ];
       overlayState.usageCount += 1;
       renderOverlayContent();
+      updateOverlayPosition();
       return sentence;
     }
+
+    concealMaskSpan(currentMask);
 
     overlayState.loadingLevel = level;
     renderOverlayContent();
@@ -1435,6 +1568,7 @@ function cleanupAnchorSignature() {
           if (!node || !node.parentElement) return NodeFilter.FILTER_REJECT;
           const text = normalizeText(node.textContent || '');
           if (!text || text.length < 8) return NodeFilter.FILTER_SKIP;
+          if (text.length >= MIN_SENTENCE_LENGTH && isLikelyNoiseText(text)) return NodeFilter.FILTER_SKIP;
           return NodeFilter.FILTER_ACCEPT;
         },
       },
@@ -1467,34 +1601,74 @@ function cleanupAnchorSignature() {
     return fallback;
   }
 
-  function runAutoHintWithRetry(attempt = 0) {
-    const info = findAutoHintTarget();
-    if (info) {
-      if (info.needsScroll && attempt < 3) {
-        const targetTop = Math.max(0, info.rect.top - 120);
-        window.scrollTo({ top: targetTop, behavior: 'smooth' });
-        window.setTimeout(() => runAutoHintWithRetry(attempt + 1), 650);
-        return;
-      }
-      overlayState.contextText = info.fullSentence || info.contextText || '';
-      overlayState.fullSentence = info.fullSentence || overlayState.contextText;
-      overlayState.maskedSentence = info.maskedSentence || '';
-      overlayState.maskText = info.maskText || '';
-      overlayState.maskRect = info.maskRect || info.rect;
-      overlayState.maskStart = typeof info.maskStart === 'number' ? info.maskStart : null;
-      overlayState.maskEnd = typeof info.maskEnd === 'number' ? info.maskEnd : null;
-      overlayState.anchorTextNode = info.node || null;
-      overlayState.usageCount = 0;
-      const mode = info.maskText
-        ? 'question'
-        : shouldUseQuestionMode(overlayState.fullSentence) ? 'question' : 'tease';
-      showHintOverlay(info.rect, mode, 'auto', info.element ?? null);
+function runAutoHintWithRetry(attempt = 0) {
+  const info = findAutoHintTarget();
+  if (info) {
+    // 스크롤 필요 시 최대 3회까지 재시도
+    if (info.needsScroll && attempt < 3) {
+      const targetTop = Math.max(0, info.rect.top - 120);
+      window.scrollTo({ top: targetTop, behavior: 'smooth' });
+      window.setTimeout(() => runAutoHintWithRetry(attempt + 1), 650);
       return;
     }
-    if (attempt < 3) {
-      window.setTimeout(() => runAutoHintWithRetry(attempt + 1), 500);
+
+    // 1) 이전 마스크 모두 제거
+    removeMaskSpan?.();
+    overlayState.maskSpanEl = null;
+
+    // 2) 텍스트 노드 범위에 실제 마스크 span 적용
+    if (
+      info.node &&
+      typeof info.maskStart === 'number' &&
+      typeof info.maskEnd === 'number' &&
+      info.maskEnd > info.maskStart
+    ) {
+      const span = applyMaskSpan?.(info.node, info.maskStart, info.maskEnd);
+      if (span) {
+        overlayState.maskSpanEl = span;
+        // 앵커를 span으로 전환 (관찰자/재앵커링 이점)
+        overlayState.anchorElement = span;
+        overlayState.anchorSignature = createAnchorSignature?.(span);
+        // 위치는 span 기준으로 다시 계산
+        overlayState.maskRect = null;
+        refreshMaskRect?.();
+      }
     }
+
+    // 3) 상태 주입
+    overlayState.contextText   = info.fullSentence || info.contextText || '';
+    overlayState.fullSentence  = info.fullSentence || overlayState.contextText;
+    overlayState.maskedSentence = info.maskedSentence || '';
+    overlayState.maskText      = info.maskText || '';
+    overlayState.maskRawText   = info.maskRawText || '';
+    overlayState.maskStart     = (typeof info.maskStart === 'number') ? info.maskStart : overlayState.maskStart;
+    overlayState.maskEnd       = (typeof info.maskEnd   === 'number') ? info.maskEnd   : overlayState.maskEnd;
+    overlayState.anchorTextNode = info.node || null;
+    overlayState.usageCount = 0;
+
+    // 4) 모드 결정
+    const mode = overlayState.maskText
+      ? 'question'
+      : shouldUseQuestionMode(overlayState.fullSentence) ? 'question' : 'tease';
+
+    // 5) 표시용 rect: span 기준이 있으면 그걸 우선 사용
+    const rectForShow = overlayState.maskRect || info.rect;
+
+    // 6) 오버레이 표시 (앵커도 span이 있으면 우선 사용)
+    showHintOverlay(
+      rectForShow,
+      mode,
+      'auto',
+      overlayState.anchorElement ?? info.element ?? null
+    );
+    return;
   }
+
+  if (attempt < 3) {
+    window.setTimeout(() => runAutoHintWithRetry(attempt + 1), 500);
+  }
+}
+
 
   function initializeAutoHint() {
     const invoke = () => {
@@ -1516,14 +1690,14 @@ function cleanupAnchorSignature() {
   });
 
   window.addEventListener('scroll', () => {
-    if (!overlayState.visible) return;
+    if (!overlayState.visible || overlayState.positionLocked) return;
     requestAnimationFrame(() => {
       updateOverlayPosition();
     });
   }, true);
 
   window.addEventListener('resize', () => {
-    if (!overlayState.visible) return;
+    if (!overlayState.visible || overlayState.positionLocked) return;
     requestAnimationFrame(() => {
       updateOverlayPosition();
     });
@@ -1694,67 +1868,137 @@ function cleanupAnchorSignature() {
     }
 
     if (request.action === 'triggerFloatingHint') {
+      // (1) 외부에서 텍스트가 들어온 경우 우선 저장
       if (typeof request.contextText === 'string' && request.contextText.trim()) {
         overlayState.contextText = request.contextText.trim();
       }
 
+      // (2) 앵커 rect/엘리먼트(선택) 정보 초기 준비
       let rectDoc = null;
       let anchorEl = null;
       if (request.anchor && typeof request.anchor === 'object') {
         const anchor = request.anchor;
-        if (
-          typeof anchor.top === 'number' &&
-          typeof anchor.left === 'number'
-        ) {
+        if (typeof anchor.top === 'number' && typeof anchor.left === 'number') {
           rectDoc = {
             top: anchor.top,
             left: anchor.left,
-            width: typeof anchor.width === 'number' ? anchor.width : 240,
+            width:  typeof anchor.width  === 'number' ? anchor.width  : 240,
             height: typeof anchor.height === 'number' ? anchor.height : 60,
           };
         }
-        if (anchor.elementSelector && typeof anchor.elementSelector === 'string') {
-          anchorEl = document.querySelector(anchor.elementSelector);
+        if (typeof anchor.elementSelector === 'string') {
+          anchorEl = document.querySelector(anchor.elementSelector) || null;
         }
       }
 
+      // (3) 현재 선택 영역 정보 가져오기 (없으면 null)
       const info = getSelectionInfo();
-      if (info) {
-        if (!overlayState.contextText) {
+
+      // (4) 기존 마스크 제거 (중복 감싸기 방지)
+      removeMaskSpan?.();
+      overlayState.maskSpanEl = null;
+
+      // (5) 선택 영역이 있고, 하나의 텍스트 노드 안에서 범위가 유효하면 그대로 마스크 span 적용
+      //     - 좌표 기반이 아니라 실제 텍스트를 감싸므로 스크롤/리플로우에도 안정적
+      let spanApplied = false;
+      try {
+        const sel = window.getSelection && window.getSelection();
+        if (sel && sel.rangeCount > 0) {
+          const range = sel.getRangeAt(0);
+          const sameNode = range.startContainer === range.endContainer;
+          if (
+            sameNode &&
+            range.startContainer &&
+            range.startContainer.nodeType === Node.TEXT_NODE &&
+            range.startOffset < range.endOffset
+          ) {
+            const textNode = range.startContainer;
+            const startOffset = range.startOffset;
+            const endOffset = range.endOffset;
+
+            // 5-1) 실제로 선택 범위를 <span class="chatterpals-mask">로 감싼다
+            const span = applyMaskSpan?.(textNode, startOffset, endOffset);
+            if (span) {
+              spanApplied = true;
+              overlayState.maskSpanEl = span;
+              anchorEl = span; // 앵커를 span으로 전환
+
+              // 상태값도 선택 기반으로 갱신
+              const raw = textNode.textContent || '';
+              const selectedSegment = raw.slice(startOffset, endOffset);
+              overlayState.maskRawText = selectedSegment;
+              overlayState.maskText = normalizeText(selectedSegment) || selectedSegment.trim();
+              overlayState.maskStart = startOffset;
+              overlayState.maskEnd = endOffset;
+
+              // 문장/문맥은 들어온 contextText 우선, 없으면 선택 텍스트 사용
+              const selectedText = sel.toString().trim();
+              overlayState.fullSentence =
+                overlayState.contextText ||
+                selectedText ||
+                overlayState.fullSentence ||
+                '';
+              overlayState.maskedSentence = overlayState.fullSentence
+                ? overlayState.fullSentence.replace(overlayState.maskText, ' _____ ')
+                : '';
+
+              // 위치는 span 기준으로 다시 계산
+              overlayState.maskRect = null;
+              refreshMaskRect?.();
+            }
+          }
+        }
+      } catch (e) {
+        console.warn('triggerFloatingHint: selection span apply failed', e);
+      }
+
+      // (6) 선택 기반 span 적용이 실패한 경우, 기존 로직으로 보정
+      if (!spanApplied && info) {
+        // 선택 정보에서 얻은 데이터 반영
+        if (!overlayState.contextText && info.text) {
           overlayState.contextText = info.text;
         }
         rectDoc = rectDoc || info.rect;
         anchorEl = anchorEl || info.element || null;
-        overlayState.fullSentence = info.fullSentence || info.contextText || overlayState.fullSentence || overlayState.contextText || '';
-        overlayState.maskedSentence = info.maskedSentence || overlayState.maskedSentence || info.contextText || '';
-        overlayState.maskText = info.maskText || overlayState.maskText || '';
-        overlayState.maskStart = typeof info.maskStart === 'number' ? info.maskStart : overlayState.maskStart;
-        overlayState.maskEnd = typeof info.maskEnd === 'number' ? info.maskEnd : overlayState.maskEnd;
-        overlayState.maskRect = info.maskRect || overlayState.maskRect || rectDoc || info.rect || null;
-        overlayState.anchorTextNode = info.node || overlayState.anchorTextNode;
+
+        // (선택 영역에 마스크 범위 정보가 없는 구조라면) 전체 문장 추출/마스크는 자동 타깃 로직에 위임 가능
+        // 여기서는 UI가 비지 않도록 최소한의 기본값만 세팅
+        overlayState.fullSentence   = overlayState.fullSentence || overlayState.contextText || '';
+        overlayState.maskedSentence = overlayState.maskedSentence || overlayState.fullSentence || '';
+        overlayState.maskRawText    = overlayState.maskRawText || info.maskRawText || '';
+        if (!overlayState.maskText && info.maskText) {
+          overlayState.maskText = info.maskText;
+        }
+        overlayState.maskStart      = overlayState.maskStart ?? null;
+        overlayState.maskEnd        = overlayState.maskEnd   ?? null;
+
+        // 커버 사각형
+        overlayState.maskRect = overlayState.maskRect || rectDoc || info.rect || null;
       }
 
-      if (rectDoc && !overlayState.maskRect) {
-        overlayState.maskRect = rectDoc;
-      }
-
-      const mode = request.mode === 'question' || request.mode === 'tease'
-        ? request.mode
-        : overlayState.maskText
+      // (7) 모드 결정
+      const mode =
+        overlayState.maskText
           ? 'question'
           : shouldUseQuestionMode(overlayState.fullSentence) ? 'question' : 'tease';
 
-      const reason = request.reason || 'message';
+      // (8) 표시용 rect: span 기준이 있으면 그걸 우선 사용
+      const rectForShow = overlayState.maskRect || rectDoc || (info && info.rect) || {
+        // 최후의 안전값: 뷰포트 중앙
+        top: window.scrollY + window.innerHeight / 2 - 30,
+        left: window.scrollX + (window.innerWidth - 240) / 2,
+        width: 240,
+        height: 60,
+      };
 
-      if (rectDoc) {
-        showHintOverlay(rectDoc, mode, reason, anchorEl);
-      } else if (info) {
-        showHintOverlay(info.rect, mode, reason, info.element ?? null);
-      } else {
-        overlayState.mode = mode;
-        overlayState.reason = reason;
-        showOverlayAtViewportCenter();
-      }
+      // (9) 오버레이 표시
+      overlayState.usageCount = 0;
+      showHintOverlay(
+        rectForShow,
+        mode,
+        'message',
+        anchorEl
+      );
 
       sendResponse?.({ ok: true });
       return true;

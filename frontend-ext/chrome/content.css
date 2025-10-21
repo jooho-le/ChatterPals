@@ -2,7 +2,7 @@
    Floating Action Button (FAB)
    =========================== */
 #chatterpals-fab {
-  position: fixed;
+  position: absolute;
   right: 16px;          /* 초기 기본 위치 */
   bottom: 20px;         /* 초기 기본 위치 */
   width: 48px;
@@ -39,7 +39,7 @@
    Sidebar Iframe
    =========================== */
 #chatterpals-sidebar-iframe {
-  position: fixed;
+  position: absolute;
   top: 0;
   right: -440px;           /* 초기에는 화면 밖 */
   width: 420px;
@@ -66,284 +66,218 @@
 .chatterpals-hint-cover {
   position: absolute;
   border-radius: 12px;
-  background: rgba(15, 23, 42, 0.85);
-  box-shadow:
-    inset 0 0 0 2px rgba(148, 163, 184, 0.5),
-    0 18px 34px rgba(15, 23, 42, 0.35);
-  pointer-events: auto;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  pointer-events: none;
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 8px;
-  color: #f8fafc;
-  backdrop-filter: blur(2px);
+  padding: 0;
   z-index: 2147483646;
   transition: opacity 0.2s ease, transform 0.2s ease;
 }
 
 .chatterpals-cover-inner {
-  width: 100%;
-  min-height: 52px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
+  display: none;
 }
 
 .chatterpals-cover-prompt {
-  font-size: 0.82rem;
+  font-size: 0.78rem;
   font-weight: 600;
-  color: rgba(248, 250, 252, 0.85);
+  color: rgba(37, 99, 235, 0.85);
+  text-align: center;
 }
 
 .mode-question .chatterpals-cover-prompt {
-  color: rgba(248, 250, 252, 0.94);
+  color: rgba(37, 99, 235, 0.94);
 }
 
 .chatterpals-cover-prompt.hidden {
   display: none;
 }
 
-.chatterpals-cover-input {
+.chatterpals-mask {
+  position: relative;
+  display: inline-block;
+  vertical-align: baseline;
+  color: transparent !important;
+  border-radius: 4px;
+  white-space: pre-wrap;
+  line-height: inherit;
+}
+
+.chatterpals-mask::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(135deg, rgba(255, 174, 94, 0.86), rgba(255, 213, 120, 0.86));
+  border-radius: 4px;
+  pointer-events: none;
+}
+
+.chatterpals-mask::after {
+  content: attr(data-mask);
+  position: absolute;
+  inset: 0;
+  display: block;
   width: 100%;
-  min-height: 48px;
-  border-radius: 10px;
-  border: 1px solid rgba(148, 163, 184, 0.5);
-  background: rgba(248, 250, 252, 0.96);
-  padding: 8px 10px;
-  font-family: inherit;
-  font-size: 0.95rem;
-  line-height: 1.45;
-  resize: vertical;
-  color: #0f172a;
-  box-shadow: 0 6px 14px rgba(15, 23, 42, 0.35);
+  height: 100%;
+  line-height: inherit;
+  white-space: inherit;
+  padding: 0;
+  font: inherit;
+  line-height: inherit;
+  letter-spacing: 0.04em;
+  color: rgba(255, 255, 255, 0.92);
+  pointer-events: none;
+  white-space: pre-wrap;
 }
 
-.chatterpals-cover-input.hidden {
-  display: none;
+.chatterpals-mask.revealed {
+  color: inherit !important;
+  text-decoration: underline;
+  text-decoration-thickness: 2px;
+  text-decoration-color: rgba(255, 158, 54, 0.8);
 }
 
-.chatterpals-cover-input:focus {
-  outline: none;
-  border-color: rgba(59, 130, 246, 0.85);
-  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.32);
+.chatterpals-mask.revealed::before {
+  background: linear-gradient(135deg, rgba(255, 219, 166, 0.65), rgba(255, 235, 192, 0.65));
 }
 
-.chatterpals-cover-input:disabled {
-  opacity: 0.6;
-  cursor: wait;
-  box-shadow: none;
+.chatterpals-mask.revealed::after {
+  content: attr(data-mask);
+  color: transparent;
 }
 
-.chatterpals-hint-helper {
+
+.chatterpals-inline-toolbar {
   position: absolute;
   z-index: 2147483647;
-  transform: translateX(-50%);
   display: flex;
-  align-items: flex-end;
-  gap: 12px;
-  max-width: min(360px, 72vw);
-  font-family: "BMDOHYEON", "Noto Sans KR", sans-serif;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px 18px 18px;
+  max-width: min(360px, 80vw);
+  background: linear-gradient(135deg, #74d5ff, #f7db75);
+  color: #3a2a18;
+  border-radius: 18px;
+  border: 1px solid rgba(255, 189, 120, 0.6);
+  box-shadow: 0 16px 36px rgba(59, 130, 246, 0.18);
+  font-family: "Noto Sans KR", "Segoe UI", sans-serif;
 }
 
-.chatterpals-hint-helper[data-position='below'] {
+.chatterpals-inline-toolbar::after {
+  content: '';
+  position: absolute;
+  left: 38px;
+  bottom: -12px;
+  border-width: 12px 12px 0 12px;
+  border-style: solid;
+  border-color: #f7db75 transparent transparent transparent;
+}
+
+.chatterpals-inline-toolbar[data-position='below']::after {
+  top: -12px;
+  bottom: auto;
+  border-width: 0 12px 12px 12px;
+  border-color: transparent transparent #74d5ff transparent;
+}
+
+.chatterpals-inline-toolbar[data-position='below'] {
   align-items: flex-start;
 }
 
-.chatterpals-hint-character {
-  width: 48px;
-  height: 48px;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 26px;
-  color: #fff;
-  box-shadow: 0 12px 24px rgba(79, 70, 229, 0.22);
-  background: linear-gradient(135deg, #6366f1, #a855f7);
-  animation: chatterpals-helper-bounce 3s ease-in-out infinite;
-}
-
-.chatterpals-hint-helper.mode-question .chatterpals-hint-character {
-  background: linear-gradient(135deg, #f97316, #fb7185);
-}
-
-.chatterpals-hint-bubble {
-  position: relative;
-  background: #0f172a;
-  color: #f8fafc;
-  padding: 16px 18px 18px;
-  border-radius: 18px;
-  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.3);
-  width: 100%;
-}
-
-.chatterpals-hint-helper.mode-question .chatterpals-hint-bubble {
-  background: #ffffff;
-  color: #111827;
-  box-shadow: 0 18px 32px rgba(15, 23, 42, 0.18);
-}
-
-.chatterpals-hint-bubble::after {
-  content: '';
-  position: absolute;
-  bottom: -14px;
-  left: 24px;
-  border-width: 14px 12px 0 12px;
-  border-style: solid;
-  border-color: #0f172a transparent transparent transparent;
-}
-
-.chatterpals-hint-helper.mode-question .chatterpals-hint-bubble::after {
-  border-color: #ffffff transparent transparent transparent;
-}
-
-.chatterpals-hint-helper[data-position='below'] .chatterpals-hint-bubble::after {
-  top: -14px;
-  bottom: auto;
-  border-width: 0 12px 14px 12px;
-  border-color: transparent transparent #0f172a transparent;
-}
-
-.chatterpals-hint-helper.mode-question[data-position='below'] .chatterpals-hint-bubble::after {
-  border-color: transparent transparent #ffffff transparent;
-}
-
-.chatterpals-hint-lines p {
-  margin: 0;
+.chatterpals-toolbar-summary {
+  font-size: 0.9rem;
   font-weight: 600;
-  line-height: 1.35;
+  line-height: 1.4;
+  padding-right: 32px;
 }
 
-.chatterpals-question {
-  margin: 6px 0 12px;
+.chatterpals-toolbar-sentence {
+  font-size: 0.82rem;
+  line-height: 1.55;
+  background: rgba(255, 247, 228, 0.96);
+  border-radius: 12px;
   padding: 10px 12px;
-  border-radius: 12px;
-  background: rgba(30, 41, 59, 0.82);
-  color: #f8fafc;
-  font-size: 0.92rem;
-  line-height: 1.5;
+  color: #604328;
+  overflow-wrap: anywhere;
 }
 
-.mode-question .chatterpals-question {
-  background: rgba(15, 23, 42, 0.92);
-}
-
-.chatterpals-question-label {
-  display: block;
-  font-size: 0.78rem;
-  font-weight: 700;
-  margin-bottom: 4px;
-  opacity: 0.72;
-  letter-spacing: 0.02em;
-}
-
-.chatterpals-question-text {
-  margin: 0;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-.chatterpals-hint-preview {
-  margin-top: 10px;
-  padding: 10px;
-  border-radius: 12px;
-  background: rgba(148, 163, 184, 0.15);
-  color: inherit;
-}
-
-.chatterpals-hint-preview.hidden {
-  display: none;
-}
-
-.chatterpals-hint-preview pre {
-  margin: 0;
-  font-family: inherit;
-  white-space: pre-wrap;
-  line-height: 1.45;
-}
-
-.chatterpals-hint-usage {
-  margin-top: 8px;
-  font-size: 0.85rem;
-  opacity: 0.8;
-}
-
-.chatterpals-hint-usage.hidden {
-  display: none;
-}
-
-.chatterpals-hint-actions {
+.chatterpals-toolbar-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 12px;
+  gap: 10px;
+  align-items: center;
 }
 
-.chatterpals-hint-actions button {
+.chatterpals-toolbar-actions button {
+  font-size: 0.78rem;
   border: none;
-  border-radius: 9999px;
-  padding: 8px 14px;
+  border-radius: 999px;
+  padding: 7px 14px;
+  background: linear-gradient(135deg, #ff914d, #ffc46b);
+  color: #fffaf2;
   font-weight: 600;
   cursor: pointer;
-  background: #fbbf24;
-  color: #1f2937;
+  box-shadow: 0 8px 14px rgba(255, 145, 77, 0.28);
   transition: transform 0.2s ease, box-shadow 0.2s ease, opacity 0.2s ease;
 }
 
-.chatterpals-hint-helper.mode-question .chatterpals-hint-actions button {
-  background: #38bdf8;
-  color: #0f172a;
-}
-
-.chatterpals-hint-actions button:hover {
+.chatterpals-toolbar-actions button:hover {
   transform: translateY(-1px);
-  box-shadow: 0 10px 18px rgba(251, 191, 36, 0.25);
+  box-shadow: 0 12px 18px rgba(255, 145, 77, 0.35);
 }
 
-.chatterpals-hint-helper.mode-question .chatterpals-hint-actions button:hover {
-  box-shadow: 0 10px 18px rgba(56, 189, 248, 0.3);
-}
-
-.chatterpals-hint-actions button:disabled {
+.chatterpals-toolbar-actions button:disabled {
   opacity: 0.6;
   cursor: wait;
   transform: none;
   box-shadow: none;
 }
 
-.chatterpals-hint-close {
+.chatterpals-toolbar-answer {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(255, 201, 131, 0.5);
+}
+
+.chatterpals-toolbar-answer .chatterpals-answer-input {
+  min-height: 56px;
+}
+
+.chatterpals-toolbar-close {
   position: absolute;
-  top: 8px;
-  right: 8px;
-  background: transparent;
+  top: 6px;
+  right: 6px;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
   border: none;
-  color: inherit;
+  background: rgba(255, 145, 77, 0.22);
+  color: #b85b1d;
   font-size: 18px;
   cursor: pointer;
 }
 
-@keyframes chatterpals-helper-bounce {
-  0%, 100% {
-    transform: translateY(0);
-  }
-  50% {
-    transform: translateY(-5px);
-  }
+.chatterpals-toolbar-hint {
+  font-size: 0.78rem;
+  line-height: 1.5;
+  background: rgba(116, 213, 255, 0.25);
+  color: #1f3d4f;
+  border-radius: 10px;
+  padding: 10px 12px;
+  white-space: pre-wrap;
 }
 
 .chatterpals-answer {
-  margin-top: 14px;
+  margin-top: 8px;
   display: flex;
   flex-direction: column;
   gap: 10px;
-}
-
-.chatterpals-answer-label {
-  font-size: 0.8rem;
-  font-weight: 700;
-  letter-spacing: 0.03em;
-  color: inherit;
-  opacity: 0.75;
 }
 
 .chatterpals-answer-input {
@@ -352,15 +286,18 @@
   resize: vertical;
   color: #0f172a;
   border-radius: 10px;
-  border: 1px solid rgba(148, 163, 184, 0.5);
+  border: 1px solid rgba(255, 179, 101, 0.6);
   padding: 8px 10px;
   font-family: inherit;
   font-size: 0.95rem;
   line-height: 1.45;
+  background: rgba(255, 249, 236, 0.9);
 }
 
-.mode-question .chatterpals-answer-input {
-  background: rgba(148, 163, 184, 0.08);
+.chatterpals-answer-input:focus {
+  outline: none;
+  border-color: rgba(255, 155, 72, 0.9);
+  box-shadow: 0 0 0 2px rgba(255, 188, 120, 0.35);
 }
 
 .chatterpals-answer-controls {
@@ -372,18 +309,19 @@
 
 .chatterpals-answer-hint {
   font-size: 0.75rem;
-  color: rgba(148, 163, 184, 0.9);
+  color: rgba(91, 67, 45, 0.7);
 }
 
 .chatterpals-answer-submit {
   border: none;
   border-radius: 9999px;
   padding: 8px 16px;
-  background: linear-gradient(135deg, #38bdf8, #6366f1);
-  color: #f8fafc;
+  background: linear-gradient(135deg, #ff8a3d, #ffaa4d);
+  color: #fff8ef;
   font-weight: 600;
   cursor: pointer;
   transition: transform 0.2s ease, box-shadow 0.2s ease, opacity 0.2s ease;
+  box-shadow: 0 12px 18px rgba(255, 145, 77, 0.28);
 }
 
 .chatterpals-answer-submit:disabled {
@@ -395,7 +333,7 @@
 
 .chatterpals-answer-submit:not(:disabled):hover {
   transform: translateY(-1px);
-  box-shadow: 0 10px 18px rgba(59, 130, 246, 0.28);
+  box-shadow: 0 12px 20px rgba(255, 145, 77, 0.35);
 }
 
 .chatterpals-answer-feedback {
@@ -430,3 +368,4 @@
 .chatterpals-answer-reference.hidden {
   display: none;
 }
+
