@@ -38,24 +38,27 @@
 /* ===========================
    Sidebar Iframe
    =========================== */
+/* ===========================
+   Sidebar Iframe (Fixed version)
+   =========================== */
 #chatterpals-sidebar-iframe {
-  position: absolute;
+  position: fixed;             /* ✅ 뷰포트 기준으로 변경 */
   top: 0;
-  right: -440px;           /* 초기에는 화면 밖 */
+  right: -440px;               /* 초기에는 화면 밖 */
   width: 420px;
   max-width: 90vw;
   height: 100vh;
   border: none;
   box-shadow: 0 0 20px rgba(0,0,0,0.25);
-  z-index: 2147483646;
   background: #fff;
+
+  z-index: 2147483647;         /* 최상위로 */
   transition: right .28s cubic-bezier(0.25, 0.1, 0.25, 1);
 }
 
 #chatterpals-sidebar-iframe.visible {
-  right: 0;               /* 표시 상태 */
+  right: 0;                    /* ✅ 화면 안으로 들어오게 */
 }
-
 /* ===========================
    Floating Hint Overlay
    =========================== */
