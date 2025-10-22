@@ -3,8 +3,11 @@ import json
 from typing import Dict, List, Optional
 import google.generativeai as genai
 
-# 'analyze' 임포트를 제거하여 의존성을 없앱니다.
-from .records import save_discussion_record
+# records 임포트: 패키지/스크립트 실행 모두 지원
+try:
+    from .records import save_discussion_record  # type: ignore
+except Exception:
+    from records import save_discussion_record
 
 class ChatSession:
     def __init__(self, text: str, **kwargs):

@@ -8,7 +8,10 @@ from jose import JWTError, jwt
 from passlib.context import CryptContext
 from pydantic import BaseModel
 
-from .records import get_user_by_id, get_user_by_username
+try:
+    from .records import get_user_by_id, get_user_by_username  # type: ignore
+except Exception:
+    from records import get_user_by_id, get_user_by_username
 
 
 pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
@@ -85,4 +88,3 @@ async def get_current_user_optional(token: Optional[str] = Depends(oauth2_scheme
     if not token:
         return None
     return await get_current_user(token=token)
-

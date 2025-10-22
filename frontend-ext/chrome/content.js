@@ -31,6 +31,14 @@
 
   const SKIP_ANCESTOR_SELECTOR =
     'script, style, noscript, code, pre, textarea, input, select, button, option, svg, math, head, iframe, canvas, video, audio, picture';
+  const AD_LIKE_SELECTOR = [
+    '*[id*="ad" i]', '*[class*="ad" i]', '*[class*="ads" i]', '*[class*="banner" i]', '*[class*="promo" i]',
+    '*[class*="promotion" i]', '*[class*="sponsor" i]', 'aside', '[role="complementary"]', '[aria-label*="ad" i]'
+  ].join(',');
+  const ARTICLE_ROOT_SELECTORS = [
+    'article', 'main', '#dic_area', '#newsEndContents', '#content-area',
+    '[id*="content" i]', '[class*="content" i]', '[class*="article" i]', '[class*="story" i]', '[class*="post" i]'
+  ];
   const MAX_TEXT_NODE_SCAN = 1200;
   const MIN_SENTENCE_LENGTH = 32;
 
@@ -165,6 +173,7 @@
     if (!element) return true;
     if (!(element instanceof HTMLElement)) return true;
     if (element.closest(SKIP_ANCESTOR_SELECTOR)) return true;
+    if (element.closest(AD_LIKE_SELECTOR)) return true;
     if (element.closest('#chatterpals-hint-helper')) return true;
     if (element.closest('.chatterpals-hint-helper')) return true;
     if (element.closest('.chatterpals-hint-cover')) return true;
@@ -172,6 +181,36 @@
     if (element.closest('[contenteditable="true"]')) return true;
     if (element.hasAttribute('contenteditable')) return true;
     return false;
+  }
+
+  function isLikelyAd(element) {
+    try {
+      if (!element || !(element instanceof HTMLElement)) return false;
+      if (element.closest(AD_LIKE_SELECTOR)) return true;
+      const text = (element.innerText || '').trim();
+      if (text && text.length <= 16 && /광고|AD\b/i.test(text)) return true;
+      const style = window.getComputedStyle(element);
+      if (style.position === 'fixed' || style.position === 'sticky') {
+        const rect = element.getBoundingClientRect();
+        if (rect.width <= 360 && rect.height <= 280) return true;
+      }
+    } catch {}
+    return false;
+  }
+
+  function pickArticleRoot() {
+    const candidates = ARTICLE_ROOT_SELECTORS
+      .map((sel) => document.querySelector(sel))
+      .filter(Boolean);
+    let best = null;
+    let bestLen = 0;
+    for (const el of candidates) {
+      if (!(el instanceof HTMLElement)) continue;
+      if (el.closest(AD_LIKE_SELECTOR)) continue;
+      const text = (el.innerText || '').trim();
+      if (text.length > bestLen) { best = el; bestLen = text.length; }
+    }
+    return best || document.body;
   }
 
   function measureTextNodeRect(node) {
@@ -936,6 +975,26 @@ function cleanupAnchorSignature() {
       });
       actions.appendChild(answerToggle);
 
+      // "해당 페이지 더 학습하기" 버튼: 사이드바 열고 현재 페이지 텍스트/URL 전달
+      const learnMoreBtn = document.createElement('button');
+      learnMoreBtn.type = 'button';
+      learnMoreBtn.className = 'chatterpals-toolbar-learnmore';
+      learnMoreBtn.textContent = '해당 페이지 더 학습하기';
+      learnMoreBtn.addEventListener('click', (event) => {
+        event.stopPropagation();
+        try {
+          const text = getFullPageText();
+          const payload = { contextDataForSidebar: { text, url: location.href } };
+          chrome.storage.local.set(payload, () => {
+            // 현재 컨텐츠 스크립트 컨텍스트에서 바로 사이드바 열기
+            openSidebar();
+          });
+        } catch {
+          openSidebar();
+        }
+      });
+      actions.appendChild(learnMoreBtn);
+
       helper.appendChild(actions);
 
       const answerContainer = document.createElement('div');
@@ -1560,14 +1619,16 @@ function cleanupAnchorSignature() {
 
   function findAutoHintTarget() {
     if (!document.body) return null;
+    const root = pickArticleRoot();
     const walker = document.createTreeWalker(
-      document.body,
+      root,
       NodeFilter.SHOW_TEXT,
       {
         acceptNode(node) {
           if (!node || !node.parentElement) return NodeFilter.FILTER_REJECT;
           const text = normalizeText(node.textContent || '');
           if (!text || text.length < 8) return NodeFilter.FILTER_SKIP;
+          if (node.parentElement && (shouldSkipElement(node.parentElement) || isLikelyAd(node.parentElement))) return NodeFilter.FILTER_SKIP;
           if (text.length >= MIN_SENTENCE_LENGTH && isLikelyNoiseText(text)) return NodeFilter.FILTER_SKIP;
           return NodeFilter.FILTER_ACCEPT;
         },
