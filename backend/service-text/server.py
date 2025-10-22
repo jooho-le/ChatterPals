@@ -1,4 +1,6 @@
 import os
+import sys
+import pathlib
 import traceback
 import json #
 import ast
@@ -12,47 +14,95 @@ from pydantic import BaseModel, Field
 from dotenv import load_dotenv, find_dotenv
 import google.generativeai as genai
 
-# --- 로컬 모듈 임포트 ---
-from .analyze import analyze
-from .chat import MANAGER as CHAT_MANAGER
-from .extract import extract_from_url
-from .level_test import (
-    create_session as create_level_test_session,
-    evaluate_responses as evaluate_level_test_responses,
-    generate_dynamic_questions,
-    get_daily_words,
-    get_session_questions as get_level_test_session,
-    questions_to_public_payload,
-    select_questions as select_level_test_questions,
-)
-from .auth import (
-    authenticate_user,
-    create_access_token,
-    get_current_user,
-    get_current_user_optional,
-    get_password_hash,
-    sanitize_user,
-)
-from .records import (
-    create_user,
-    delete_record_for_user,
-    get_record,
-    get_user_by_username,
-    list_records,
-    list_records_for_user,
-    record_to_pdf,
-    records_to_pdf,
-    save_questions_record,
-    get_level_test_rankings,
-    get_learning_volume_rankings,
-    get_user_level_test_rank,
-    get_user_learning_ranks,
-    save_level_test_record,
-    update_user_nickname,
-    get_daily_goal_with_progress,
-    upsert_daily_goal,
-    list_goal_achievements,
-)
+# --- 로컬 모듈 임포트(패키지/스크립트 실행 모두 지원) ---
+_THIS_DIR = pathlib.Path(__file__).resolve().parent
+if str(_THIS_DIR) not in sys.path:
+    sys.path.insert(0, str(_THIS_DIR))
+
+try:
+    # 패키지로 실행되는 경우
+    from .analyze import analyze  # type: ignore
+    from .chat import MANAGER as CHAT_MANAGER  # type: ignore
+    from .extract import extract_from_url  # type: ignore
+    from .level_test import (  # type: ignore
+        create_session as create_level_test_session,
+        evaluate_responses as evaluate_level_test_responses,
+        generate_dynamic_questions,
+        get_daily_words,
+        get_session_questions as get_level_test_session,
+        questions_to_public_payload,
+        select_questions as select_level_test_questions,
+    )
+    from .auth import (  # type: ignore
+        authenticate_user,
+        create_access_token,
+        get_current_user,
+        get_current_user_optional,
+        get_password_hash,
+        sanitize_user,
+    )
+    from .records import (  # type: ignore
+        create_user,
+        delete_record_for_user,
+        get_record,
+        get_user_by_username,
+        list_records,
+        list_records_for_user,
+        record_to_pdf,
+        records_to_pdf,
+        save_questions_record,
+        get_level_test_rankings,
+        get_learning_volume_rankings,
+        get_user_level_test_rank,
+        get_user_learning_ranks,
+        save_level_test_record,
+        update_user_nickname,
+        get_daily_goal_with_progress,
+        upsert_daily_goal,
+        list_goal_achievements,
+    )
+except Exception:
+    # 스크립트로 직접 실행되는 경우
+    from analyze import analyze
+    from chat import MANAGER as CHAT_MANAGER
+    from extract import extract_from_url
+    from level_test import (
+        create_session as create_level_test_session,
+        evaluate_responses as evaluate_level_test_responses,
+        generate_dynamic_questions,
+        get_daily_words,
+        get_session_questions as get_level_test_session,
+        questions_to_public_payload,
+        select_questions as select_level_test_questions,
+    )
+    from auth import (
+        authenticate_user,
+        create_access_token,
+        get_current_user,
+        get_current_user_optional,
+        get_password_hash,
+        sanitize_user,
+    )
+    from records import (
+        create_user,
+        delete_record_for_user,
+        get_record,
+        get_user_by_username,
+        list_records,
+        list_records_for_user,
+        record_to_pdf,
+        records_to_pdf,
+        save_questions_record,
+        get_level_test_rankings,
+        get_learning_volume_rankings,
+        get_user_level_test_rank,
+        get_user_learning_ranks,
+        save_level_test_record,
+        update_user_nickname,
+        get_daily_goal_with_progress,
+        upsert_daily_goal,
+        list_goal_achievements,
+    )
 
 # --- 환경 변수 및 API 클라이언트 설정 ---
 load_dotenv(find_dotenv())
@@ -85,6 +135,10 @@ def _resolve_goal_date(value: Optional[str]) -> str:
 class QuestionsRequest(BaseModel):
     text: Optional[str] = None
     max_questions: int = Field(5, ge=0, le=20)
+
+class AnalyzeUrlRequest(BaseModel):
+    url: str = Field(..., min_length=8)
+    max_questions: int = Field(0, ge=0, le=20)
 
 class QuestionAnswerItem(BaseModel):
     question: str
@@ -302,6 +356,18 @@ async def get_my_daily_goal_history(
 def post_questions(req: QuestionsRequest):
     try:
         return analyze((req.text or "").strip(), max_questions=req.max_questions)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/analyze_url")
+def post_analyze_url(req: AnalyzeUrlRequest):
+    try:
+        text, meta = extract_from_url(req.url)
+        result = analyze(text.strip(), max_questions=req.max_questions)
+        # 메타 정보 포함
+        result["meta"] = {**(result.get("meta") or {}), **meta}
+        return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -651,7 +717,10 @@ def get_record_as_pdf(record_id: str):
 def run(host: str = "0.0.0.0", port: int = 8008):
     import uvicorn
     print(f"Starting Text Server on http://{host}:{port}")
-    uvicorn.run(app, host=host, port=port, reload=True)
+    # NOTE: When passing an app instance, uvicorn cannot use reload/workers.
+    # Using reload=True here causes uvicorn to exit immediately with a warning.
+    # Keep reload disabled for script execution.
+    uvicorn.run(app, host=host, port=port, reload=False)
 
 if __name__ == "__main__":
     run()

@@ -1,7 +1,10 @@
 import json
 from pathlib import Path
 
-from .records import save_record
+try:
+    from .records import save_record  # type: ignore
+except Exception:
+    from records import save_record
 
 
 def migrate_json_records(json_dir: Path) -> int:

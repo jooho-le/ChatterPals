@@ -105,11 +105,19 @@ function initializeSidebar() {
     let toastTimeoutId = null;
 
     chrome.storage.local.get('contextDataForSidebar', (result) => {
-        if (result.contextDataForSidebar && result.contextDataForSidebar.text) {
-            lastAnalyzedText = result.contextDataForSidebar.text.trim();
+        const payload = result.contextDataForSidebar || null;
+        if (!payload) return;
+        const incomingUrl = typeof payload.url === 'string' ? payload.url.trim() : '';
+        const incomingText = typeof payload.text === 'string' ? payload.text.trim() : '';
+
+        if (incomingUrl) {
+            resultDiv.textContent = '페이지에서 본문을 추출하고 요약 중입니다...';
+            analyzeUrlForSummary(incomingUrl);
+        } else if (incomingText) {
+            lastAnalyzedText = incomingText;
             analyzeTextForSummary(lastAnalyzedText);
-            chrome.storage.local.remove('contextDataForSidebar');
         }
+        chrome.storage.local.remove('contextDataForSidebar');
     });
 
     // --- 이벤트 리스너 ---
@@ -228,6 +236,61 @@ function initializeSidebar() {
             resultDiv.textContent = '텍스트 분석 서버에 연결할 수 없습니다.';
             console.error('요약 분석 실패:', error);
         }
+    }
+
+    async function analyzeUrlForSummary(url) {
+        lastAnalysisResult = null;
+        lastEvaluationResult = null;
+        questionsDiv.innerHTML = '';
+        actionButtons.style.display = 'none';
+        analysisChoice.style.display = 'none';
+        chatDiv.style.display = 'none';
+        chatEvaluationBox.style.display = 'none';
+        chatActive = false;
+        sidSpan.textContent = '-';
+        qSpan.textContent = '(없음)';
+        summaryView.style.display = 'none';
+
+        try {
+            const response = await fetch(`${TEXT_API_SERVER}/analyze_url`, {
+                method: 'POST',
+                headers: buildHeaders({ 'Content-Type': 'application/json' }),
+                body: JSON.stringify({ url, max_questions: 0 }),
+            });
+            if (!response.ok) {
+                let detail = '';
+                try { const j = await response.json(); detail = j?.detail || ''; } catch {}
+                console.warn('URL 분석 응답 에러', response.status, detail);
+                await fallbackAnalyzeFromPageText();
+                return;
+            }
+            const data = await response.json();
+            lastAnalysisResult = data;
+            lastAnalyzedText = data.meta?.url ? `URL: ${data.meta.url}` : '';
+            summaryDiv.textContent = data.summary;
+            topicsDiv.innerHTML = (data.topics || []).map(topic => `<span class="topic-tag">${topic}</span>`).join('');
+            summaryView.style.display = 'block';
+            resultDiv.textContent = '요약이 준비되었습니다. 질문 생성 또는 토론 시작을 선택하세요.';
+            analysisChoice.style.display = 'flex';
+        } catch (error) {
+            console.error('URL 요약 분석 실패:', error);
+            await fallbackAnalyzeFromPageText();
+        }
+    }
+
+    async function fallbackAnalyzeFromPageText() {
+        return new Promise((resolve) => {
+            chrome.runtime.sendMessage({ action: 'getTextFromPage', type: 'fullPage' }, async (response) => {
+                const text = (response && typeof response.text === 'string') ? response.text.trim() : '';
+                if (text) {
+                    await analyzeTextForSummary(text);
+                    resolve();
+                } else {
+                    resultDiv.textContent = '자동 추출에 실패했습니다. 기사 본문을 드래그해서 선택한 뒤 다시 시도해 주세요.';
+                    resolve();
+                }
+            });
+        });
     }
 
     async function generateQuestions(text) {

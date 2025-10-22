@@ -6,35 +6,37 @@ import StudyLog from '../views/StudyLog.vue'
 import Ranking from '../views/Ranking.vue'
 import MyPage from '../views/MyPage.vue'
 import RecordDetail from '../views/RecordDetail.vue'
+import ShareCapture from '../views/ShareCapture.vue'
+
 const routes = [
   {
-    path: '/',     
+    path: '/',
     name: 'Home',
-    component: Home,  
+    component: Home,
   },
   {
-    path: '/level-test', 
-    name: 'LevelTest', 
+    path: '/level-test',
+    name: 'LevelTest',
     component: LevelTest
   },
   {
-    path: '/aitutor', 
-    name: 'AITutor', 
+    path: '/aitutor',
+    name: 'AITutor',
     component: AITutor
-  }, 
+  },
   {
-    path: '/studylog', 
-    name: 'StudyLog', 
+    path: '/studylog',
+    name: 'StudyLog',
     component: StudyLog
-  }, 
+  },
   {
     path: '/ranking',
     name: 'Ranking',
     component: Ranking,
   },
   {
-    path: '/mypage', 
-    name: 'MyPage', 
+    path: '/mypage',
+    name: 'MyPage',
     component: MyPage
   },
   {
@@ -42,6 +44,11 @@ const routes = [
     name: 'RecordDetail',
     component: RecordDetail,
     props: true,
+  },
+  {
+    path: '/share-capture',
+    name: 'ShareCapture',
+    component: ShareCapture,
   }
 ]
 

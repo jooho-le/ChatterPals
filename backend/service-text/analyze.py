@@ -21,17 +21,17 @@ def analyze(text: str, max_questions: int = 5) -> Dict[str, Any]:
         summarizer_model = genai.GenerativeModel('gemini-2.0-flash-lite-preview')
         
         summarizer_prompt = f"""
-        당신은 신문사 수석 편집장입니다. 다음 텍스트를 분석하여 아래 JSON 형식에 맞춰 결과를 반환해 주세요.
+        You are a senior news editor. Read the text and return a strict JSON object.
 
-        1. `summary`: 텍스트의 핵심 내용을 3-4 문장으로 요약합니다.
-        2. `keywords`: 텍스트의 핵심 주제를 나타내는 키워드를 가장 중요한 순서대로 5개 추출합니다.
+        1. `summary`: Provide a concise summary in natural English (3-4 sentences).
+        2. `keywords`: Extract 5 key topics in English, ordered by importance.
 
-        텍스트:
+        Text:
         ---
-        {text[:10000]} 
+        {text[:10000]}
         ---
 
-        JSON 출력:
+        JSON output only:
         """
 
         summary_response = summarizer_model.generate_content(summarizer_prompt)
