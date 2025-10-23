@@ -1,6 +1,6 @@
 <template>
   <header class="app-header" role="banner">
-    <div class="container">
+    <div class="app-header__inner">
       <RouterLink
         to="/"
         class="logo"
@@ -222,17 +222,30 @@ watch(
 .app-header {
   position: sticky;
   top: 0;
+  left: 0;
+  right: 0;
   z-index: 1000;
-  background: rgba(255, 255, 255, 0.85);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
-  border-bottom: 1px solid #eaeaea;
+  width: 100%;
+  isolation: isolate;
 }
 
-.container {
+.app-header::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: #fff;
+  border-bottom: 1px solid rgba(226, 232, 240, 0.8);
+  box-shadow: 0 6px 24px rgba(15, 23, 42, 0.05);
+  pointer-events: none;
+  z-index: -1;
+}
+
+.app-header__inner {
   box-sizing: border-box;
   width: 100%;
-  padding: 0.75rem clamp(16px, 4vw, 48px);
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 0.75rem clamp(16px, 4vw, 32px);
   display: flex;
   align-items: center;
   gap: 1rem;
@@ -403,7 +416,7 @@ watch(
 }
 
 @media (max-width: 820px) {
-  .container {
+  .app-header__inner {
     flex-wrap: wrap;
     gap: 0.75rem;
   }
