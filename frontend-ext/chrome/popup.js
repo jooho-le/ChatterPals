@@ -87,8 +87,8 @@ function initializeSidebar() {
     const toastEl = document.getElementById('toast');
 
     // --- 서버 주소 설정 ---
-    const TEXT_API_SERVER = 'http://127.0.0.1:8008';
-    const VOICE_API_SERVER = 'http://127.0.0.1:8000';
+    const TEXT_API_SERVER = 'https://chatterpals.onrender.com';
+    const VOICE_API_SERVER = 'https://chatterpals-1.onrender.com';
 
     // --- 상태 변수 ---
     let lastAnalyzedText = '';

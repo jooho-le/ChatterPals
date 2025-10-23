@@ -1,4 +1,4 @@
-const TEXT_API_BASE = import.meta.env.VITE_TEXT_API_BASE ?? 'http://127.0.0.1:8008'
+const TEXT_API_BASE = import.meta.env.VITE_TEXT_API_BASE ?? 'https://chatterpals.onrender.com'
 
 export interface LevelTestRankingEntry {
   rank: number

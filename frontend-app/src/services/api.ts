@@ -1,6 +1,7 @@
 // frontend-app/src/services/api.ts
 
-const VOICE_API_BASE = 'http://127.0.0.1:8000/api';
+const VOICE_API_BASE =
+  import.meta.env.VITE_VOICE_API_BASE ?? 'https://chatterpals-1.onrender.com/api';
 
 /**
  * 음성 파일을 서버로 보내 텍스트로 변환(STT)하고 AI 응답까지 받습니다.

@@ -14,7 +14,7 @@
   const AUTH_MESSAGE_TYPE = 'AUTH_UPDATE';
   const AUTH_SOURCE_WEB = 'chatter-web';
   const AUTH_SOURCE_EXTENSION = 'chatter-extension';
-  const HINT_API_BASE = 'http://127.0.0.1:8000/api';
+  const HINT_API_BASE = 'https://chatterpals-1.onrender.com/api';
   const HINT_ENDPOINT = `${HINT_API_BASE}/hints`;
   const ANSWER_ENDPOINT = `${HINT_API_BASE}/check-answer`;
 

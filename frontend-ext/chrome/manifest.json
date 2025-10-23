@@ -27,6 +27,8 @@
     "contextMenus"
   ],
   "host_permissions": [
+    "https://chatterpals.onrender.com/*",
+    "https://chatterpals-1.onrender.com/*",
     "http://127.0.0.1:8008/*",
     "http://127.0.0.1:8000/*",
     "<all_urls>"
