@@ -1,4 +1,4 @@
-const TEXT_API_BASE = import.meta.env.VITE_TEXT_API_BASE ?? 'https://chatterpals.onrender.com'
+const TEXT_API_BASE = import.meta.env.VITE_TEXT_API_BASE ?? 'https://chatterpals-1gbe.onrender.com'
 
 export interface LevelTestOption {
   id: string
