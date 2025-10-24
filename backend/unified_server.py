@@ -2,8 +2,8 @@ import os
 import uvicorn
 from fastapi import FastAPI
 
-from service_voice.server import app as voice_app
-from service_text.server import app as text_app
+from backend.service_voice.server import app as voice_app
+from backend.service_text.server import app as text_app
 
 app = FastAPI(title="ChatterPals Unified API", version="1.0.0")
 
