@@ -109,9 +109,10 @@ except Exception:
 # --- 환경 변수 및 API 클라이언트 설정 ---
 load_dotenv(find_dotenv())
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
-if not GOOGLE_API_KEY:
-    raise RuntimeError("'.env' 파일에 GOOGLE_API_KEY가 없습니다.")
-genai.configure(api_key=GOOGLE_API_KEY)
+if GOOGLE_API_KEY:
+    genai.configure(api_key=GOOGLE_API_KEY)
+else:
+    print("[service-text] WARNING: GOOGLE_API_KEY not set. Falling back to local quiz generation.")
 
 # --- FastAPI 앱 초기화 ---
 app = FastAPI(title="ChatterPals Text API", version="1.0.0")

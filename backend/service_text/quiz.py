@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import unicodedata
+import random
 from dataclasses import dataclass
 from typing import Iterable, List, Optional
 
@@ -133,6 +134,56 @@ def _fill_with_fallback(options: List[str], answer_index: int, limit: int) -> (L
     return options, answer_index
 
 
+def _build_fallback_quiz(
+    sentence: str,
+    highlight: str,
+    *,
+    option_count: int,
+) -> Quiz:
+    prompt = "하이라이트된 표현에 들어갈 영어 단어를 골라보세요."
+    answer_candidate = _sanitize_option(highlight)
+
+    options: List[str] = []
+    seen: set[str] = set()
+
+    if answer_candidate:
+        options.append(answer_candidate)
+        seen.add(answer_candidate.lower())
+
+    for candidate in random.sample(FALLBACK_OPTIONS, k=len(FALLBACK_OPTIONS)):
+        sanitized = _sanitize_option(candidate)
+        if not sanitized or sanitized.lower() in seen:
+            continue
+        options.append(sanitized)
+        seen.add(sanitized.lower())
+        if len(options) >= option_count:
+            break
+
+    while len(options) < option_count:
+        filler = f"choice {len(options) + 1}"
+        if filler.lower() in seen:
+            continue
+        options.append(filler)
+        seen.add(filler.lower())
+
+    answer_index = (
+        options.index(answer_candidate)
+        if answer_candidate and answer_candidate in options
+        else 0
+    )
+
+    explanation = None
+    if sentence.strip():
+        explanation = f"문장 참고: {sentence.strip()}"
+
+    return Quiz(
+        prompt=prompt,
+        options=options[:option_count],
+        answer_index=answer_index,
+        explanation=explanation,
+    )
+
+
 def generate_translation_quiz(
     sentence: str,
     highlight: str,
@@ -143,41 +194,45 @@ def generate_translation_quiz(
     if option_count < 3:
         option_count = 3
 
-    model = genai.GenerativeModel(QUIZ_MODEL)
-    prompt = QUIZ_PROMPT_TEMPLATE.format(
-        sentence=sentence.strip(),
-        highlight=highlight.strip(),
-        context=(context or "").strip() or "없음",
-        option_count=option_count,
-    )
-    response = model.generate_content(prompt)
-    raw_text = "".join(part.text for part in response.candidates[0].content.parts).strip()
     try:
+        model = genai.GenerativeModel(QUIZ_MODEL)
+        prompt = QUIZ_PROMPT_TEMPLATE.format(
+            sentence=sentence.strip(),
+            highlight=highlight.strip(),
+            context=(context or "").strip() or "없음",
+            option_count=option_count,
+        )
+        response = model.generate_content(prompt)
+        raw_text = "".join(part.text for part in response.candidates[0].content.parts).strip()
         payload = _parse_json_payload(raw_text)
-    except Exception as error:
-        raise QuizGenerationError(f"Failed to parse quiz JSON: {error}") from error
 
-    options_raw = payload.get("options") or []
-    if not isinstance(options_raw, list):
-        options_raw = []
+        options_raw = payload.get("options") or []
+        if not isinstance(options_raw, list):
+            options_raw = []
 
-    answer_index_raw = payload.get("answer_index")
-    answer_index = int(answer_index_raw) if isinstance(answer_index_raw, (int, float)) else 0
+        answer_index_raw = payload.get("answer_index")
+        answer_index = int(answer_index_raw) if isinstance(answer_index_raw, (int, float)) else 0
 
-    options_clean, updated_answer = _deduplicate_options(options_raw, answer_index)
-    if updated_answer == -1:
-        updated_answer = 0
-    options_clean, updated_answer = _fill_with_fallback(options_clean, updated_answer, option_count)
+        options_clean, updated_answer = _deduplicate_options(options_raw, answer_index)
+        if updated_answer == -1:
+            updated_answer = 0
+        options_clean, updated_answer = _fill_with_fallback(options_clean, updated_answer, option_count)
 
-    if len(options_clean) < option_count:
-        raise QuizGenerationError("Quiz generation returned insufficient unique options.")
+        if len(options_clean) < option_count:
+            raise QuizGenerationError("Quiz generation returned insufficient unique options.")
 
-    prompt_text = str(payload.get("prompt") or "").strip() or "하이라이트된 표현에 들어갈 영어 단어를 골라보세요."
-    explanation = str(payload.get("explanation") or "").strip() or None
+        prompt_text = str(payload.get("prompt") or "").strip() or "하이라이트된 표현에 들어갈 영어 단어를 골라보세요."
+        explanation = str(payload.get("explanation") or "").strip() or None
 
-    return Quiz(
-        prompt=prompt_text,
-        options=options_clean[:option_count],
-        answer_index=updated_answer,
-        explanation=explanation,
-    )
+        return Quiz(
+            prompt=prompt_text,
+            options=options_clean[:option_count],
+            answer_index=updated_answer,
+            explanation=explanation,
+        )
+    except Exception:
+        return _build_fallback_quiz(
+            sentence=sentence,
+            highlight=highlight,
+            option_count=option_count,
+        )
