@@ -102,55 +102,17 @@
 
 .chatterpals-mask {
   position: relative;
-  display: inline-block;
-  vertical-align: baseline;
-  color: transparent !important;
-  border-radius: 4px;
-  white-space: pre-wrap;
-  line-height: inherit;
-}
-
-.chatterpals-mask::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(135deg, rgba(255, 174, 94, 0.86), rgba(255, 213, 120, 0.86));
-  border-radius: 4px;
-  pointer-events: none;
-}
-
-.chatterpals-mask::after {
-  content: attr(data-mask);
-  position: absolute;
-  inset: 0;
-  display: block;
-  width: 100%;
-  height: 100%;
-  line-height: inherit;
-  white-space: inherit;
-  padding: 0;
-  font: inherit;
-  line-height: inherit;
-  letter-spacing: 0.04em;
-  color: rgba(255, 255, 255, 0.92);
-  pointer-events: none;
-  white-space: pre-wrap;
+  display: inline;
+  padding: 0 4px;
+  border-radius: 6px;
+  background: linear-gradient(135deg, rgba(255, 214, 138, 0.8), rgba(255, 236, 189, 0.8));
+  color: inherit !important;
+  transition: background 0.2s ease, box-shadow 0.2s ease;
 }
 
 .chatterpals-mask.revealed {
-  color: inherit !important;
-  text-decoration: underline;
-  text-decoration-thickness: 2px;
-  text-decoration-color: rgba(255, 158, 54, 0.8);
-}
-
-.chatterpals-mask.revealed::before {
-  background: linear-gradient(135deg, rgba(255, 219, 166, 0.65), rgba(255, 235, 192, 0.65));
-}
-
-.chatterpals-mask.revealed::after {
-  content: attr(data-mask);
-  color: transparent;
+  background: linear-gradient(135deg, rgba(255, 236, 189, 0.6), rgba(255, 248, 219, 0.6));
+  box-shadow: 0 0 0 2px rgba(255, 203, 134, 0.25);
 }
 
 
@@ -199,6 +161,10 @@
 }
 
 .chatterpals-toolbar-sentence {
+  display: none;
+}
+
+.chatterpals-toolbar-sentence {
   font-size: 0.82rem;
   line-height: 1.55;
   background: rgba(255, 247, 228, 0.96);
@@ -215,7 +181,7 @@
   align-items: center;
 }
 
-.chatterpals-toolbar-actions button {
+.chatterpals-toolbar-actions .hint-action {
   font-size: 0.78rem;
   border: none;
   border-radius: 999px;
@@ -228,12 +194,12 @@
   transition: transform 0.2s ease, box-shadow 0.2s ease, opacity 0.2s ease;
 }
 
-.chatterpals-toolbar-actions button:hover {
+.chatterpals-toolbar-actions .hint-action:hover {
   transform: translateY(-1px);
   box-shadow: 0 12px 18px rgba(255, 145, 77, 0.35);
 }
 
-.chatterpals-toolbar-actions button:disabled {
+.chatterpals-toolbar-actions .hint-action:disabled {
   opacity: 0.6;
   cursor: wait;
   transform: none;
@@ -274,6 +240,50 @@
   border-radius: 10px;
   padding: 10px 12px;
   white-space: pre-wrap;
+}
+
+.chatterpals-quiz-loading {
+  font-size: 0.8rem;
+  color: rgba(55, 65, 81, 0.9);
+}
+
+.chatterpals-quiz-option {
+  border: 1px solid rgba(255, 182, 108, 0.6);
+  border-radius: 9999px;
+  padding: 6px 16px;
+  background: rgba(255, 255, 255, 0.92);
+  color: #1f2937;
+  cursor: pointer;
+  font-weight: 600;
+  transition: transform 0.18s ease, box-shadow 0.18s ease, background 0.18s ease;
+  margin-right: 6px;
+}
+
+.chatterpals-quiz-option:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 16px rgba(249, 161, 65, 0.25);
+}
+
+.chatterpals-quiz-option.selected {
+  border-color: rgba(249, 161, 65, 0.95);
+  background: rgba(249, 173, 90, 0.2);
+}
+
+.chatterpals-quiz-option.correct {
+  border-color: rgba(52, 211, 153, 0.9);
+  background: rgba(52, 211, 153, 0.18);
+  color: #065f46;
+}
+
+.chatterpals-quiz-option.incorrect {
+  border-color: rgba(248, 113, 113, 0.85);
+  background: rgba(248, 113, 113, 0.15);
+  color: #991b1b;
+}
+
+.chatterpals-quiz-option:disabled {
+  opacity: 0.7;
+  cursor: default;
 }
 
 .chatterpals-answer {
