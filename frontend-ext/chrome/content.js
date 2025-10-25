@@ -16,7 +16,7 @@
   const API_BASE = 'https://chatterpals-1gbe.onrender.com/api';
   const ANSWER_ENDPOINT = `${API_BASE}/check-answer`;
   const TEXT_API_BASE = 'https://chatterpals-1gbe.onrender.com';
-  const QUIZ_ENDPOINT = `${TEXT_API_BASE}/quiz/cloze`;
+  const QUIZ_ENDPOINT = `${TEXT_API_BASE}/text/quiz/cloze`;
   const QUESTION_PROMPT = '하이라이트된 표현에 들어갈 영어 단어를 골라보세요.';
 
   let sidebarIframe = null;
@@ -106,6 +106,8 @@
       sidebarIframe = null;
     }, 300);
   }
+
+  window.openSidebar = openSidebar;
 
   // ---------------------------
   // 텍스트 추출

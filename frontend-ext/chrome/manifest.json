@@ -27,6 +27,7 @@
     "contextMenus"
   ],
   "host_permissions": [
+    "https://chatterpals-1gbe.onrender.com/*",
     "https://chatterpals.onrender.com/*",
     "https://chatterpals-1.onrender.com/*",
     "http://127.0.0.1:8008/*",
@@ -42,7 +43,9 @@
         "offscreen.html",
         "offscreen.js",
         "permission.html",
-        "permission.js"
+        "permission.js",
+        "overlay.js",
+        "overlay.css"
       ],
       "matches": [ "<all_urls>" ]
     }

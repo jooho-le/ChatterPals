@@ -8,7 +8,7 @@
   const API_BASE = 'https://chatterpals-1gbe.onrender.com/api';
   const ANSWER_ENDPOINT = `${API_BASE}/check-answer`;
   const TEXT_API_BASE = 'https://chatterpals-1gbe.onrender.com';
-  const QUIZ_ENDPOINT = `${TEXT_API_BASE}/quiz/cloze`;
+  const QUIZ_ENDPOINT = `${TEXT_API_BASE}/text/quiz/cloze`;
   const QUESTION_PROMPT = '하이라이트된 표현에 들어갈 영어 단어를 골라보세요.';
 
   let sidebarIframe = null;
@@ -200,7 +200,9 @@
 
   let overlayPositionRaf = null;
 
-  bootstrapAuthState();
+  if (typeof bootstrapAuthState === 'function') {
+    bootstrapAuthState();
+  }
 
   function resolveAnchorElement(candidate) {
     if (!candidate) return null;
@@ -1205,7 +1207,7 @@ function cleanupAnchorSignature() {
         const statusLabel = document.createElement('span');
         statusLabel.className = 'chatterpals-quiz-loading';
         statusLabel.textContent = overlayState.loadingLevel === 'translation'
-          ? '퀴즈를 준비하고 있어요…\n  Tip : ESC 또는 X를 눌러 이번 학습을 건너뛸 수 있어요. 학습 내용은 홈페이지에서 확인되고, 학습 환경 조정에 적용됩니다.'
+          ? '퀴즈를 준비하고 있어요…\nTip : ESC 또는 X를 눌러 이번 학습을 건너뛸 수 있어요. 학습 내용은 홈페이지에서 확인되고, 학습 환경 조정에 적용됩니다.'
           : '질문을 준비하지 못했어요. 잠시 후 다시 시도해 주세요.';
         container.appendChild(statusLabel);
       }
@@ -1216,7 +1218,16 @@ function cleanupAnchorSignature() {
       learnMoreBtn.textContent = '더 학습하러 가기';
       learnMoreBtn.addEventListener('click', (event) => {
         event.stopPropagation();
-        openSidebar();
+        try {
+          const text = getFullPageText();
+          const payload = { contextDataForSidebar: { text, url: location.href } };
+          chrome.storage.local.set(payload, () => {
+            // 현재 컨텐츠 스크립트 컨텍스트에서 바로 사이드바 열기
+            openSidebar();
+          });
+        } catch {
+          openSidebar();
+        }
       });
       container.appendChild(learnMoreBtn);
     }
@@ -1707,8 +1718,14 @@ function runAutoHintWithRetry(attempt = 0) {
     });
   });
 
+
+  console.log('readyState:', document.readyState);
+  console.log('auto hint scheduled at:', performance.now());
   initializeAutoHint();
 
+  
+
+  
   window.addEventListener('message', (event) => {
     const data = event.data;
     if (!data || typeof data !== 'object') return;
