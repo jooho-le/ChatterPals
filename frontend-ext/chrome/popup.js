@@ -1,4 +1,8 @@
 // ChatterPals Extension Frontend Script
+const AUTH_MESSAGE_TYPE = 'AUTH_UPDATE';
+const AUTH_SOURCE_EXTENSION = 'chatter-extension';
+const HOMEPAGE_URL = 'https://chatterpals-sw.web.app/';
+
 document.addEventListener('DOMContentLoaded', () => {
     'use strict';
     const urlParams = new URLSearchParams(window.location.search);
@@ -84,6 +88,7 @@ function initializeSidebar() {
     const accountSignedIn = document.getElementById('account-signed-in');
     const accountNickname = document.getElementById('account-nickname');
     const logoutBtn = document.getElementById('logoutBtn');
+    const homepageLink = document.querySelector('.homepage-link');
     const toastEl = document.getElementById('toast');
 
     // --- 서버 주소 설정 ---
@@ -138,6 +143,12 @@ function initializeSidebar() {
     });
     loginForm.addEventListener('submit', onLoginSubmit);
     logoutBtn.addEventListener('click', handleLogout);
+    if (homepageLink) {
+        homepageLink.addEventListener('click', (event) => {
+            event.preventDefault();
+            openHomepageWithAuth();
+        });
+    }
 
     chrome.storage.local.get(['authToken', 'authUser'], async (stored) => {
         if (stored.authToken) {
@@ -770,6 +781,69 @@ function initializeSidebar() {
                 });
             }
         });
+    }
+
+    function openHomepageWithAuth() {
+        if (!chrome || !chrome.tabs || !chrome.tabs.create) {
+            window.open(HOMEPAGE_URL, '_blank', 'noopener');
+            return;
+        }
+
+        chrome.tabs.create({ url: HOMEPAGE_URL }, (tab) => {
+            if (!tab || typeof tab.id !== 'number') {
+                return;
+            }
+
+            if (!authToken) {
+                return;
+            }
+
+            injectAuthIntoTab(tab.id, authToken, authUser);
+        });
+    }
+
+    function injectAuthIntoTab(tabId, token, user) {
+        if (!chrome || !chrome.scripting || !token) {
+            return;
+        }
+
+        try {
+            const execution = chrome.scripting.executeScript({
+                target: { tabId },
+                world: 'MAIN',
+                injectImmediately: true,
+                func: (tokenValue, userValue, source, messageType) => {
+                    try {
+                        if (tokenValue) {
+                            window.localStorage.setItem('chatter_token', tokenValue);
+                        } else {
+                            window.localStorage.removeItem('chatter_token');
+                        }
+                    } catch (storageError) {
+                        console.warn('[popup] Unable to sync token to homepage', storageError);
+                    }
+
+                    window.postMessage(
+                        {
+                            source,
+                            type: messageType,
+                            token: tokenValue,
+                            user: userValue ?? null,
+                        },
+                        '*',
+                    );
+                },
+                args: [token, user, AUTH_SOURCE_EXTENSION, AUTH_MESSAGE_TYPE],
+            });
+
+            if (execution && typeof execution.catch === 'function') {
+                execution.catch((error) => {
+                    console.warn('[popup] Failed to inject auth state', error);
+                });
+            }
+        } catch (error) {
+            console.warn('[popup] Injection setup failed', error);
+        }
     }
 
     function updateAccountUI() {
