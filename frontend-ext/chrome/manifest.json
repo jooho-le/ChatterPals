@@ -15,8 +15,8 @@
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
-      "js": ["content.js"],
-      "css": ["content.css"]
+      "js": ["content.js", "overlay.js"],
+      "css": ["content.css", "overlay.css"]
     }
   ],
   "permissions": [
@@ -27,6 +27,10 @@
     "contextMenus"
   ],
   "host_permissions": [
+    "https://chatterpals-1gbe.onrender.com/*",
+    "https://chatterpals.onrender.com/*",
+    "https://chatterpals-1.onrender.com/*",
+    "http://localhost:8008/*",
     "http://127.0.0.1:8008/*",
     "http://127.0.0.1:8000/*",
     "<all_urls>"
@@ -40,10 +44,11 @@
         "offscreen.html",
         "offscreen.js",
         "permission.html",
-        "permission.js"
+        "permission.js",
+        "overlay.js",
+        "overlay.css"
       ],
       "matches": [ "<all_urls>" ]
     }
   ]
 }
-

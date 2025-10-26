@@ -1,5 +1,4 @@
 <template>
-
   <main class="screen" aria-label="Chatterpals 소개">
     <!-- 콘텐츠: 위젯 전환 전 -->
     <div v-if="!hasStarted" class="content">
@@ -52,7 +51,7 @@
         </ul>
       </section>
 
-            <!-- 사용 흐름 -->
+      <!-- 사용 흐름 -->
       <section id="how" class="how" aria-labelledby="how-title">
         <h2 id="how-title" class="section-title center">어떻게 동작하나요?</h2>
         <ol class="steps" aria-label="사용 흐름 3단계">
@@ -74,7 +73,6 @@
         </ol>
       </section>
 
-
       <!-- 숫자 하이라이트 -->
       <section class="stats" aria-label="성과/하이라이트">
         <h2 id="stats-title" class="section-title center">현재까지의 성과</h2>
@@ -85,7 +83,6 @@
         </ul>
         <p class="stats__footnote">* 내부 베타 테스트 기준</p>
       </section>
-
 
       <!-- FAQ -->
       <section id="faq" class="faq-wrap" aria-labelledby="faq-title">
@@ -171,35 +168,35 @@ const hasStarted = ref(false)
   min-height: 100svh;
   padding: clamp(16px, 3vw, 32px) 0 clamp(40px, 6vw, 72px);
   background: #0b1220;
-  overflow: initial;
 }
 .screen::before{
   content:"";
   position: fixed; 
   inset: 0; 
   z-index: 0;
-  /* 스샷 느낌의 파스텔 그라데이션 (오렌지 → 민트 → 시안) */
   background: linear-gradient(
     var(--grad-angle),
     #f6b77d 0%,
     #cfe6b0 48%,
     #98e6f2 100%
   );
-
-
-  /* 각도 회전 애니메이션 */
   animation: rotate-gradient 24s linear infinite;
   filter: saturate(1.04) blur(.3px);
   opacity:.96; pointer-events:none;
 }
 @keyframes grad-spin{ to{ transform: rotate(360deg); } }
-@media (prefers-reduced-motion: reduce){ .screen::before{ animation:none; } }
 
 /* ========== Content Wrapper ========== */
 .content{
-  position: relative; z-index:1;
-  width:min(1100px, 96vw); margin: 0 auto;
-  display:grid; gap: clamp(18px, 2.2vw, 28px);
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  max-width: 1100px;
+  box-sizing: border-box;
+  margin: 0 auto;
+  padding: 0 clamp(24px, 4vw, 48px);
+  display: grid;
+  gap: clamp(18px, 2.2vw, 28px);
 }
 
 /* ========== Hero ========== */
@@ -319,11 +316,84 @@ const hasStarted = ref(false)
   .footer__inner{ color:#1f2937; }
 }
 
-/* ========== Responsive ========== */
-@media (max-width: 900px){
-  .steps{ grid-template-columns: 1fr; }
-  .stats__list{ grid-template-columns: 1fr; }
-  .cta-band__inner{ grid-template-columns: 1fr; justify-items:center; text-align:center; }
+/* ========== Responsive (기존) ========== */
+@media (max-width: 640px){
+  .screen{ padding: clamp(12px, 5vw, 24px) 0 clamp(36px, 10vw, 60px); }
+  .content{
+    width: 100%;
+    max-width: 520px;
+    padding: 0 clamp(16px, 6vw, 24px);
+  }
+  .intro{ text-align: left; gap: 12px; }
+  .title{ font-size: clamp(1.8rem, 5.4vw, 2.4rem); }
+  .subtitle{ font-size: clamp(0.98rem, 4.6vw, 1.12rem); }
+  .hero-cta{ flex-direction: column; align-items: stretch; gap: 12px; }
+  .btn-primary{ width: 100%; }
+  .btn-link{
+    display: inline-block;
+    width: 100%;
+    text-align: center;
+    padding: .4rem 0;
+    border-radius: 0;
+    background: none;
+    text-decoration: underline;
+  }
+  .block,
+  .stats__list,
+  .steps{ width: 100%; }
+  .block{ margin: clamp(16px, 6vw, 24px) auto 0; }
+  .section-title{ font-size: clamp(1.12rem, 4.5vw, 1.35rem); }
+  .bubble{ font-size: clamp(.93rem, 3.6vw, 1.04rem); }
 }
-@media (max-width:420px){ .title{ word-break: keep-all; } }
+
+/* ========== Responsive (모바일 전용 미세조정: 색상 변경 없음) ========== */
+@media (max-width: 640px){
+
+  /* 안전영역(노치) */
+  @supports (padding: max(0px)) {
+    .screen {
+      padding-top: max(env(safe-area-inset-top), clamp(12px, 5vw, 24px));
+      padding-bottom: max(env(safe-area-inset-bottom), clamp(36px, 10vw, 60px));
+    }
+  }
+
+  /* 본문 폭/패딩 정리 */
+  .content { width: 100%; padding: 0 16px; }
+
+  /* 히어로 버튼 터치 타깃 & 수직 스택 */
+  .hero-cta { margin-top: 2px; gap: 10px; }
+  .btn-primary { width: 100%; padding: 14px 16px; border-radius: 14px; }
+  .btn-link { padding: 6px 0; }
+
+  /* 버블: 화면 꽉 차게, 행간/패딩 확대 (가독성) */
+  .chat { gap: 10px; }
+  .bubble {
+    max-width: 100%;
+    padding: 12px 14px;
+    line-height: 1.5;
+  }
+  /* 플로팅 버튼과 겹침 완화: 각 항목 하단 여백 확보(스크린샷의 보라색 FAB 대비) */
+  .chat .bubble:nth-last-child(1) { margin-bottom: 68px; }
+
+  /* 단계/통계/FAQ: 1열 카드 간격만 다듬기 */
+  .steps   { grid-template-columns: 1fr; gap: 12px; }
+  .stats__list { grid-template-columns: 1fr; gap: 12px; }
+  .faq-list { gap: 12px; }
+
+  /* CTA 밴드: 모바일 카드형 정렬 */
+  .cta-band__inner { grid-template-columns: 1fr; text-align: center; row-gap: 8px; }
+
+  /* 푸터: 세로 스택 */
+  .footer__inner { flex-direction: column; gap: 10px; }
+  .footer__nav { flex-wrap: wrap; gap: 10px; }
+
+  /* 스크롤 시 배경 애니 과한 이슈 방지(시각 효과 유지) */
+  .screen::before { filter: saturate(1.04) blur(.3px); opacity: .96; }
+}
+
+/* 플로팅 FAB가 있다면(외부 컴포넌트) 최소한의 회피영역 */
+@media (max-width: 640px){
+  :root { --fab-size: 64px; }
+  body { padding-bottom: max(0px, var(--fab-size)); }
+}
 </style>

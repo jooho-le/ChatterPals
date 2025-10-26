@@ -61,6 +61,7 @@ try:
         upsert_daily_goal,
         list_goal_achievements,
     )
+    from .quiz import generate_translation_quiz, QuizGenerationError  # type: ignore
 except Exception:
     # 스크립트로 직접 실행되는 경우
     from analyze import analyze
@@ -103,13 +104,15 @@ except Exception:
         upsert_daily_goal,
         list_goal_achievements,
     )
+    from quiz import generate_translation_quiz, QuizGenerationError
 
 # --- 환경 변수 및 API 클라이언트 설정 ---
 load_dotenv(find_dotenv())
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
-if not GOOGLE_API_KEY:
-    raise RuntimeError("'.env' 파일에 GOOGLE_API_KEY가 없습니다.")
-genai.configure(api_key=GOOGLE_API_KEY)
+if GOOGLE_API_KEY:
+    genai.configure(api_key=GOOGLE_API_KEY)
+else:
+    print("[service-text] WARNING: GOOGLE_API_KEY not set. Falling back to local quiz generation.")
 
 # --- FastAPI 앱 초기화 ---
 app = FastAPI(title="ChatterPals Text API", version="1.0.0")
@@ -149,6 +152,18 @@ class SaveQuestionsRequest(BaseModel):
     summary: Optional[str] = None
     topics: Optional[List[str]] = None
     selection_text: Optional[str] = Field(None, max_length=4000)
+
+class QuizRequest(BaseModel):
+    sentence: str = Field(..., min_length=1, description="Sentence containing the highlighted phrase.")
+    highlight: str = Field(..., min_length=1, description="Highlighted phrase to translate into English.")
+    context: Optional[str] = Field(None, description="Additional context for the quiz generation model.")
+    option_count: int = Field(3, ge=3, le=5, description="Number of answer options to generate.")
+
+class QuizResponse(BaseModel):
+    prompt: str
+    options: List[str]
+    answer_index: int = Field(..., ge=0)
+    explanation: Optional[str] = None
 
 # --- 신규 평가 기능 모델 추가 ---
 class EvaluationRequest(BaseModel):
@@ -370,6 +385,32 @@ def post_analyze_url(req: AnalyzeUrlRequest):
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/quiz/cloze")
+def post_quiz_cloze(req: QuizRequest):
+    sentence = (req.sentence or "").strip()
+    highlight = (req.highlight or "").strip()
+    if not sentence or not highlight:
+        raise HTTPException(status_code=400, detail="Sentence and highlight are required.")
+    try:
+        quiz = generate_translation_quiz(
+            sentence=sentence,
+            highlight=highlight,
+            option_count=req.option_count,
+            context=req.context,
+        )
+        return QuizResponse(
+            prompt=quiz.prompt,
+            options=quiz.options,
+            answer_index=quiz.answer_index,
+            explanation=quiz.explanation,
+        )
+    except QuizGenerationError as error:
+        raise HTTPException(status_code=502, detail=str(error))
+    except Exception as error:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to generate quiz: {error}")
 
 
 @app.get("/level-test/start", tags=["Level Test"])
@@ -724,3 +765,4 @@ def run(host: str = "0.0.0.0", port: int = 8008):
 
 if __name__ == "__main__":
     run()
+

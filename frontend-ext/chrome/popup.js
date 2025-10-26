@@ -50,7 +50,11 @@ function initializeSidebar() {
     const questionBtn = document.getElementById('question');
     const analyzeAllBtn = document.getElementById('analyzeAll');
     const questionCountSelect = document.getElementById('question-count-select');
-    const chatQuestionLimitSelect = document.getElementById('chat-question-limit');
+    const questionCountStep = document.getElementById('question-count-step');
+    const confirmGenerateBtn = document.getElementById('confirm-generate');
+    const cancelGenerateBtn = document.getElementById('cancel-generate');
+    // 토론 질문 수는 고정값 사용
+    const CHAT_QUESTION_LIMIT = 5;
     const analysisChoice = document.getElementById('analysis-choice');
     const questionFlowBtn = document.getElementById('start-question-flow');
     const chatStartBtn = document.getElementById('chatStart');
@@ -70,7 +74,7 @@ function initializeSidebar() {
     const chatVocabScore = document.getElementById('chat-vocab-score');
     const chatClarityScore = document.getElementById('chat-clarity-score');
     const chatFeedback = document.getElementById('chat-feedback');
-    const chatLimitDisplay = document.getElementById('chat-limit-display');
+    // 질문 수 표시 제거됨
     const recordBtn = document.getElementById('recordBtn');
     const voiceStatus = document.getElementById('voiceStatus');
     const userTranscript = document.getElementById('userTranscript');
@@ -87,8 +91,17 @@ function initializeSidebar() {
     const toastEl = document.getElementById('toast');
 
     // --- 서버 주소 설정 ---
-    const TEXT_API_SERVER = 'http://127.0.0.1:8008';
-    const VOICE_API_SERVER = 'http://127.0.0.1:8000';
+    // 기본값은 로컬 통합 서버의 Text 앱(prefix: /text)
+    let TEXT_API_SERVER = 'http://localhost:8008/text';
+    const VOICE_API_SERVER = 'https://chatterpals-1.onrender.com';
+
+    // chrome.storage.local에 textApiBase가 있으면 우선 사용
+    chrome.storage.local.get(['textApiBase'], (r) => {
+        if (typeof r.textApiBase === 'string' && r.textApiBase.trim()) {
+            TEXT_API_SERVER = r.textApiBase.trim();
+            console.log('[popup] Using stored TEXT_API_SERVER =', TEXT_API_SERVER);
+        }
+    });
 
     // --- 상태 변수 ---
     let lastAnalyzedText = '';
@@ -104,27 +117,62 @@ function initializeSidebar() {
     let chatActive = false;
     let toastTimeoutId = null;
 
+    // 자동 분석 트리거: 저장된 컨텍스트가 있으면 사용, 없으면 현재 탭 URL로 분석
+    let analysisStarted = false;
     chrome.storage.local.get('contextDataForSidebar', (result) => {
         const payload = result.contextDataForSidebar || null;
-        if (!payload) return;
-        const incomingUrl = typeof payload.url === 'string' ? payload.url.trim() : '';
-        const incomingText = typeof payload.text === 'string' ? payload.text.trim() : '';
+        const incomingUrl = payload && typeof payload.url === 'string' ? payload.url.trim() : '';
+        const incomingText = payload && typeof payload.text === 'string' ? payload.text.trim() : '';
 
         if (incomingUrl) {
-            resultDiv.textContent = '페이지에서 본문을 추출하고 요약 중입니다...';
+            analysisStarted = true;
+            resultDiv.textContent = '페이지를 자동으로 요약 중입니다...';
             analyzeUrlForSummary(incomingUrl);
         } else if (incomingText) {
+            analysisStarted = true;
             lastAnalyzedText = incomingText;
             analyzeTextForSummary(lastAnalyzedText);
         }
-        chrome.storage.local.remove('contextDataForSidebar');
+        if (payload) chrome.storage.local.remove('contextDataForSidebar');
+
+        if (!analysisStarted) {
+            tryAutoAnalyzeFromActiveTab();
+        }
     });
 
+    function tryAutoAnalyzeFromActiveTab() {
+        resultDiv.textContent = '페이지를 자동으로 요약 중입니다...';
+        chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+            const tab = tabs && tabs[0];
+            const url = tab && typeof tab.url === 'string' ? tab.url : '';
+            if (url && /^https?:\/\//i.test(url)) {
+                analyzeUrlForSummary(url);
+            } else {
+                fallbackAnalyzeFromPageText();
+            }
+        });
+    }
+
     // --- 이벤트 리스너 ---
-    questionBtn.addEventListener('click', () => handlePageTextRequest('selection'));
-    analyzeAllBtn.addEventListener('click', () => handlePageTextRequest('fullPage'));
+    if (questionBtn) questionBtn.addEventListener('click', () => handlePageTextRequest('selection'));
+    if (analyzeAllBtn) analyzeAllBtn.addEventListener('click', () => handlePageTextRequest('fullPage'));
     if (questionFlowBtn) {
-        questionFlowBtn.addEventListener('click', () => generateQuestions(lastAnalyzedText));
+        questionFlowBtn.addEventListener('click', () => {
+            // 질문 개수 선택 단계 표시
+            analysisChoice.style.display = 'none';
+            questionCountStep.style.display = 'flex';
+            resultDiv.textContent = '질문 개수를 선택하고 생성 버튼을 눌러주세요.';
+        });
+    }
+    if (confirmGenerateBtn) {
+        confirmGenerateBtn.addEventListener('click', () => generateQuestions(lastAnalyzedText));
+    }
+    if (cancelGenerateBtn) {
+        cancelGenerateBtn.addEventListener('click', () => {
+            questionCountStep.style.display = 'none';
+            analysisChoice.style.display = 'flex';
+            resultDiv.textContent = '요약이 준비되었습니다. 질문 생성 또는 토론 시작을 선택하세요.';
+        });
     }
     evaluateBtn.addEventListener('click', handleEvaluation);
     saveBtn.addEventListener('click', handleSaveEvaluation);
@@ -210,6 +258,7 @@ function initializeSidebar() {
         questionsDiv.innerHTML = '';
         actionButtons.style.display = 'none';
         analysisChoice.style.display = 'none';
+        questionCountStep.style.display = 'none';
         chatDiv.style.display = 'none';
         chatEvaluationBox.style.display = 'none';
         chatActive = false;
@@ -232,6 +281,7 @@ function initializeSidebar() {
             summaryView.style.display = 'block';
             resultDiv.textContent = '요약이 준비되었습니다. 질문 생성 또는 토론 시작을 선택하세요.';
             analysisChoice.style.display = 'flex';
+            questionCountStep.style.display = 'none';
         } catch (error) {
             resultDiv.textContent = '텍스트 분석 서버에 연결할 수 없습니다.';
             console.error('요약 분석 실패:', error);
@@ -454,7 +504,7 @@ function initializeSidebar() {
                 headers: buildHeaders({ 'Content-Type': 'application/json' }),
                 body: JSON.stringify({
                     text: textForChat,
-                    max_questions: parseInt(chatQuestionLimitSelect.value, 10),
+                    max_questions: CHAT_QUESTION_LIMIT,
                 }),
             });
             if (!response.ok) {
@@ -465,9 +515,9 @@ function initializeSidebar() {
             currentSessionId = data.session_id;
             currentRecordId = data.record_id;
             sidSpan.textContent = currentSessionId.substring(0, 8);
-            qSpan.textContent = data.question;
+            qSpan.textContent = toPlainChat(data.question);
             chatDiv.style.display = 'block';
-            chatLimitDisplay.textContent = chatQuestionLimitSelect.value;
+            // 질문 수 표시는 제거되었습니다.
             resultDiv.textContent = '채팅이 시작되었습니다.';
             chatActive = true;
             chatEndBtn.style.display = 'inline-flex';
@@ -494,7 +544,7 @@ function initializeSidebar() {
             });
             const data = await response.json();
             if (data.error) throw new Error(data.error);
-            qSpan.textContent = data.question;
+            qSpan.textContent = toPlainChat(data.question);
             answerInput.value = '';
             if (data.done) {
                 finalizeChat(data.record_id);
@@ -688,6 +738,20 @@ function initializeSidebar() {
             headers.Authorization = `Bearer ${authToken}`;
         }
         return headers;
+    }
+
+    // 채팅 표시용: 마크다운/헤딩 제거하여 한 문장으로 정리
+    function toPlainChat(text) {
+        if (!text) return '';
+        try {
+            let t = String(text);
+            t = t.replace(/```[\s\S]*?```/g, '');
+            t = t.replace(/^#+\s*/gm, '');
+            t = t.replace(/\*\*([^*]+)\*\*/g, '$1');
+            t = t.replace(/\*([^*]+)\*/g, '$1');
+            t = t.replace(/\s+/g, ' ').trim();
+            return t;
+        } catch { return text; }
     }
 
     function showToast(message) {

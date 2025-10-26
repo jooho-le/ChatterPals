@@ -25,5 +25,13 @@ body {
   font-family: "BMDOHYEON", "Noto Sans KR", sans-serif;
   line-height: 1.6;
   color: #111827;
+  margin: 0;
+  padding: 0;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
 }
 </style>
