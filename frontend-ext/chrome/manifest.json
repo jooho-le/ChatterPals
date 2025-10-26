@@ -30,6 +30,7 @@
     "https://chatterpals-1gbe.onrender.com/*",
     "https://chatterpals.onrender.com/*",
     "https://chatterpals-1.onrender.com/*",
+    "http://localhost:8008/*",
     "http://127.0.0.1:8008/*",
     "http://127.0.0.1:8000/*",
     "<all_urls>"
@@ -51,4 +52,3 @@
     }
   ]
 }
-

@@ -87,8 +87,17 @@ function initializeSidebar() {
     const toastEl = document.getElementById('toast');
 
     // --- 서버 주소 설정 ---
-    const TEXT_API_SERVER = 'https://chatterpals.onrender.com';
+    // 기본값은 로컬 통합 서버의 Text 앱(prefix: /text)
+    let TEXT_API_SERVER = 'http://localhost:8008/text';
     const VOICE_API_SERVER = 'https://chatterpals-1.onrender.com';
+
+    // chrome.storage.local에 textApiBase가 있으면 우선 사용
+    chrome.storage.local.get(['textApiBase'], (r) => {
+        if (typeof r.textApiBase === 'string' && r.textApiBase.trim()) {
+            TEXT_API_SERVER = r.textApiBase.trim();
+            console.log('[popup] Using stored TEXT_API_SERVER =', TEXT_API_SERVER);
+        }
+    });
 
     // --- 상태 변수 ---
     let lastAnalyzedText = '';

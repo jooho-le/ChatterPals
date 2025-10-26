@@ -3,6 +3,18 @@
 const OFFSCREEN_DOCUMENT_PATH = '/offscreen.html';
 let creating; // Promise to prevent multiple offscreen documents
 
+// 안전한 메시지 전송 유틸 (컨텐츠 스크립트 미주입 탭 전송 시 에러 무시)
+function safeTabsSendMessage(tabId, message) {
+  try {
+    chrome.tabs.sendMessage(tabId, message, () => {
+      // 컨텐츠 스크립트가 없으면 lastError 설정됨. 동작에는 영향 없으니 무시.
+      void chrome.runtime.lastError;
+    });
+  } catch (_) {
+    // 호출 자체 실패도 무시
+  }
+}
+
 // --- 오른쪽 클릭 메뉴 설정 ---
 chrome.runtime.onInstalled.addListener(() => {
   chrome.contextMenus.create({
@@ -15,7 +27,7 @@ chrome.runtime.onInstalled.addListener(() => {
 chrome.contextMenus.onClicked.addListener((info, tab) => {
   if (info.menuItemId === "chatterpals_analyze" && tab?.id) {
     chrome.storage.local.set({ contextDataForSidebar: { text: info.selectionText } }, () => {
-        chrome.tabs.sendMessage(tab.id, { action: 'openSidebarFromContext' });
+        safeTabsSendMessage(tab.id, { action: 'openSidebarFromContext' });
     });
   }
 });
@@ -35,7 +47,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     // 사이드바 닫기
     } else if (request.action === 'closeSidebar') {
         const forward = (tabId) => {
-            if (tabId) chrome.tabs.sendMessage(tabId, { action: 'closeSidebar' });
+            if (tabId) safeTabsSendMessage(tabId, { action: 'closeSidebar' });
         };
         if (sender.tab?.id) {
             forward(sender.tab.id);
@@ -68,7 +80,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             tabs.forEach((tab) => {
                 if (!tab.id || (tab.url && tab.url.startsWith('chrome://'))) return;
                 console.log('[background] Forwarding auth update to tab', tab.id, tab.url);
-                chrome.tabs.sendMessage(tab.id, {
+                safeTabsSendMessage(tab.id, {
                     action: 'authUpdate',
                     token: request.token ?? null,
                     user: request.user ?? null,

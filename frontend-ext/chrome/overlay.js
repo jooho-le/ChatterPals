@@ -5,10 +5,25 @@
   const AUTH_MESSAGE_TYPE = 'AUTH_UPDATE';
   const AUTH_SOURCE_WEB = 'chatter-web';
   const AUTH_SOURCE_EXTENSION = 'chatter-extension';
-  const API_BASE = 'https://chatterpals-1gbe.onrender.com/api';
-  const ANSWER_ENDPOINT = `${API_BASE}/check-answer`;
-  const TEXT_API_BASE = 'https://chatterpals-1gbe.onrender.com';
-  const QUIZ_ENDPOINT = `${TEXT_API_BASE}/text/quiz/cloze`;
+  // 기본값: 로컬 통합 서버 (voice는 /voice, text는 /text)
+  let VOICE_API_BASE = 'http://localhost:8008/voice/api';
+  let TEXT_API_BASE = 'http://localhost:8008/text';
+  let ANSWER_ENDPOINT = `${VOICE_API_BASE}/check-answer`;
+  let QUIZ_ENDPOINT = `${TEXT_API_BASE}/quiz/cloze`;
+
+  // chrome.storage.local에 저장된 베이스가 있으면 사용
+  chrome.storage.local.get(['textApiBase', 'voiceApiBase'], (r) => {
+    if (typeof r.textApiBase === 'string' && r.textApiBase.trim()) {
+      TEXT_API_BASE = r.textApiBase.trim();
+      QUIZ_ENDPOINT = `${TEXT_API_BASE}/quiz/cloze`;
+      console.log('[overlay] Using stored TEXT_API_BASE =', TEXT_API_BASE);
+    }
+    if (typeof r.voiceApiBase === 'string' && r.voiceApiBase.trim()) {
+      VOICE_API_BASE = r.voiceApiBase.trim();
+      ANSWER_ENDPOINT = `${VOICE_API_BASE}/check-answer`;
+      console.log('[overlay] Using stored VOICE_API_BASE =', VOICE_API_BASE);
+    }
+  });
   const QUESTION_PROMPT = '하이라이트된 표현에 들어갈 영어 단어를 골라보세요.';
 
   let sidebarIframe = null;

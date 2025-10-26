@@ -1,4 +1,7 @@
-const TEXT_API_BASE = import.meta.env.VITE_TEXT_API_BASE ?? 'https://chatterpals-1gbe.onrender.com'
+const TEXT_API_BASE = import.meta.env.VITE_TEXT_API_BASE
+  ?? ((location.hostname === 'localhost' || location.hostname === '127.0.0.1')
+      ? 'http://localhost:8008/text'
+      : 'https://chatterpals.onrender.com/text')
 
 export interface LevelTestOption {
   id: string
