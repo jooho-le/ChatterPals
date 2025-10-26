@@ -1,11 +1,21 @@
 /* --- 기본 스타일 --- */
+:root{
+    --cp-primary:#2563eb; /* indigo-600 */
+    --cp-secondary:#0ea5e9; /* sky-500 */
+    --cp-dark:#111827; /* gray-900 */
+    --cp-text:#111827;
+    --cp-muted:#6b7280;
+    --cp-bg:#f8fafc;
+    --cp-surface:#ffffff;
+    --cp-border:#e5e7eb;
+}
 body {
     width: 380px;
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     font-size: 14px;
     margin: 0;
-    color: #24292f;
-    background-color: #f6f8fa;
+    color: var(--cp-text);
+    background-color: var(--cp-bg);
 }
 .container { padding: 16px; }
 .section { margin-bottom: 12px; }
@@ -14,20 +24,20 @@ body {
     font-weight: 600;
     margin-top: 0;
     margin-bottom: 12px;
-    border-bottom: 1px solid #d0d7de;
+    border-bottom: 1px solid var(--cp-border);
     padding-bottom: 8px;
 }
 .row { margin-bottom: 10px; }
-.divider { border: 0; height: 1px; background-color: #d0d7de; margin: 24px 0; }
+.divider { border: 0; height: 1px; background-color: var(--cp-border); margin: 24px 0; }
 .button-group { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .result-box {
     padding: 10px;
     border-radius: 6px;
-    background-color: #fff;
+    background-color: var(--cp-surface);
     min-height: 20px;
     font-size: 13px;
     line-height: 1.5;
-    border: 1px solid #d0d7de;
+    border: 1px solid var(--cp-border);
 }
 .inline-control {
     display: flex;
@@ -67,10 +77,10 @@ body {
 
 /* --- 버튼 & 선택 메뉴 스타일 --- */
 button, select {
-    background-color: #f6f8fa;
-    border: 1px solid rgba(27, 31, 36, 0.15);
+    background-color: var(--cp-surface);
+    border: 1px solid var(--cp-border);
     border-radius: 6px;
-    color: #24292f;
+    color: var(--cp-text);
     font-family: inherit;
     font-size: 14px;
     font-weight: 500;
@@ -79,14 +89,14 @@ button, select {
     transition: background-color 0.2s cubic-bezier(0.3, 0, 0.5, 1);
 }
 button { cursor: pointer; }
-button:hover { background-color: #f3f4f6; }
-button:disabled { color: #8c959f; cursor: not-allowed; background-color: #f6f8fa; }
+button:hover { background-color: #f1f5f9; }
+button:disabled { color: #9ca3af; cursor: not-allowed; background-color: var(--cp-bg); }
 #send {
-    background-color: #1f883d;
+    background-color: #16a34a;
     color: white;
-    border-color: rgba(27, 31, 36, 0.15);
+    border-color: transparent;
 }
-#send:hover { background-color: #1a7f37; }
+#send:hover { background-color: #15803d; }
 
 /* --- 입력창 및 질문/답변 스타일 --- */
 .input-group { display: flex; gap: 8px; }
@@ -94,9 +104,9 @@ button:disabled { color: #8c959f; cursor: not-allowed; background-color: #f6f8fa
 .questions-container { display: flex; flex-direction: column; gap: 12px; }
 .question-item {
     padding: 12px;
-    border: 1px solid #d0d7de;
+    border: 1px solid var(--cp-border);
     border-radius: 6px;
-    background-color: #fff;
+    background-color: var(--cp-surface);
     word-break: break-word;
 }
 .question-text {
@@ -119,7 +129,7 @@ button:disabled { color: #8c959f; cursor: not-allowed; background-color: #f6f8fa
 .evaluation-result {
     margin-top: 12px;
     padding: 10px;
-    background-color: #f6f8fa;
+    background-color: #f1f5f9;
     border-radius: 6px;
     font-size: 13px;
     display: none; /* 평소에는 숨김 */
@@ -135,13 +145,13 @@ button:disabled { color: #8c959f; cursor: not-allowed; background-color: #f6f8fa
     gap: 8px;
 }
 .score-item .label { color: #57606a; }
-.score-item .value { color: #0969da; font-weight: 600; }
+.score-item .value { color: var(--cp-primary); font-weight: 600; }
 .feedback-text { line-height: 1.6; margin: 0; }
 
 /* --- 요약 & 토픽 스타일 --- */
 .summary-box {
-    background-color: #fff;
-    border: 1px solid #d0d7de;
+    background-color: var(--cp-surface);
+    border: 1px solid var(--cp-border);
     padding: 12px;
     border-radius: 6px;
     font-size: 14px;
@@ -151,8 +161,8 @@ button:disabled { color: #8c959f; cursor: not-allowed; background-color: #f6f8fa
 }
 .topics-box { display: flex; flex-wrap: wrap; gap: 6px; }
 .topic-tag {
-    background-color: #ddf4ff;
-    color: #0969da;
+    background: rgba(37,99,235,.08);
+    color: var(--cp-primary);
     padding: 3px 8px;
     border-radius: 12px;
     font-size: 12px;
@@ -182,8 +192,8 @@ button:disabled { color: #8c959f; cursor: not-allowed; background-color: #f6f8fa
 
 /* --- 계정 섹션 --- */
 .account-section {
-    background: #fff;
-    border: 1px solid #d0d7de;
+    background: var(--cp-surface);
+    border: 1px solid var(--cp-border);
     border-radius: 8px;
     padding: 16px;
 }
@@ -217,15 +227,15 @@ button:disabled { color: #8c959f; cursor: not-allowed; background-color: #f6f8fa
 }
 
 .btn-primary {
-    background: linear-gradient(120deg, #6366f1, #14b8a6);
+    background: linear-gradient(135deg, var(--cp-primary), var(--cp-secondary));
     color: #fff;
     border: none;
 }
 
 .btn-outline {
-    border: 1px solid #d0d7de;
+    border: 1px solid var(--cp-border);
     background: transparent;
-    color: #111827;
+    color: var(--cp-dark);
 }
 
 .btn-danger {
@@ -238,6 +248,9 @@ button:disabled { color: #8c959f; cursor: not-allowed; background-color: #f6f8fa
     margin: 0 0 12px;
     font-weight: 600;
 }
+
+/* 헤더 부분 링크 스타일 */
+.homepage-link{ color: var(--cp-primary); }
 
 .hint {
     font-size: 12px;

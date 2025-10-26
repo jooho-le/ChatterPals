@@ -48,9 +48,11 @@
 
     <div class="section">
         <h3 class="section-title">화면 질문 생성</h3>
-        <div class="row button-group">
-            <button id="question">선택 텍스트 분석</button>
-            <button id="analyzeAll">전체 화면 분석</button>
+        <div class="row button-group" id="analysis-choice" style="display:none;">
+            <button id="start-question-flow">📝 질문 생성하기</button>
+            <button id="chatStart">💬 토론 시작하기</button>
+        </div>
+        <div class="row button-group" id="question-count-step" style="display:none;">
             <label class="inline-control">
                 질문 개수
                 <select id="question-count-select">
@@ -61,19 +63,8 @@
                     <option value="5">5개</option>
                 </select>
             </label>
-            <label class="inline-control">
-                토론 질문 수
-                <select id="chat-question-limit">
-                    <option value="3">3개</option>
-                    <option value="5" selected>5개</option>
-                    <option value="7">7개</option>
-                    <option value="10">10개</option>
-                </select>
-            </label>
-        </div>
-        <div class="row button-group" id="analysis-choice" style="display:none;">
-            <button id="start-question-flow">📝 질문 생성하기</button>
-            <button id="chatStart">💬 토론 시작하기</button>
+            <button id="confirm-generate" class="btn btn-primary">생성</button>
+            <button id="cancel-generate" class="btn btn-outline">취소</button>
         </div>
         <div class="row">
             <div id="result" class="result-box">Ready.</div>
@@ -91,7 +82,6 @@
         <h4 class="section-title">Discuss</h4>
         <div class="chat-meta">
             <div>세션: <code id="sid">-</code></div>
-            <div class="chat-limit">질문 수: <strong id="chat-limit-display">-</strong></div>
         </div>
         <div class="chat-status">AI: <span id="q">(없음)</span></div>
         <div class="row input-group">
@@ -99,7 +89,7 @@
           <button id="send">Send</button>
         </div>
         <div class="row chat-actions">
-            <button id="chatEnd" class="btn btn-danger" style="display:none;">🛑 조기 종료</button>
+            <button id="chatEnd" class="btn btn-danger" style="display:none;">🛑 종료</button>
         </div>
         <div id="chat-evaluation" class="discussion-eval" style="display:none;">
             <h5>AI 평가</h5>

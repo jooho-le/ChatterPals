@@ -25,18 +25,22 @@ class ChatSession:
         self.max_questions: int = int(kwargs.get('max_q') or kwargs.get('max_questions') or 6)
 
     def first_question(self) -> str:
-        # AI가 직접 첫 질문을 생성하도록 프롬프트를 구성합니다.
+        # 첫 질문은 1:1 영어 대화 느낌으로, 불필요한 서론/마크다운 없이 간결하게 생성
         prompt = f"""
-        다음 텍스트에 대해 깊이 있는 토론을 시작하려고 합니다.
-        이 텍스트의 핵심 내용을 파악하고, 사용자의 비판적 사고를 자극할 수 있는 첫 번째 토론 질문을 하나만 만들어 주세요.
+        You are a friendly discussion partner.
+        Read the article text and ask ONE short, conversational question in natural English to kick off a 1:1 chat.
+        Constraints:
+        - Only output the question sentence.
+        - No headings, lists, explanations, or markdown.
+        - Keep it under 120 characters.
 
-        텍스트:
+        Article text:
         ---
         {self.text[:4000]}
         ---
         """
         response = self.model.generate_content(prompt)
-        first_q = response.text.strip()
+        first_q = (response.text or "").strip()
         self.questions.append(first_q)
         self.q_index = 1
         return first_q
@@ -45,28 +49,32 @@ class ChatSession:
         if len(self.questions) >= self.max_questions:
             return self._closing_message()
         self.q_index += 1
-        # 대화 기록을 바탕으로 AI가 후속 질문을 생성합니다.
+        # 후속 질문도 동일하게 간결한 1문장 영어 질문으로 제한
         prompt = f"""
-        다음은 AI와 사용자 간의 토론 내용입니다. 이 대화의 흐름을 이어받아,
-        사용자의 마지막 답변에 대한 통찰력 있는 후속 질문을 하나만 만들어 주세요.
+        You are continuing a 1:1 discussion in English.
+        Based on the article and the conversation so far, ask ONE short follow-up question.
+        Constraints:
+        - Only output the question sentence.
+        - No headings, lists, explanations, or markdown.
+        - Keep it under 120 characters.
 
-        전체 토론 텍스트:
+        Article (context):
         ---
         {self.text[:2000]}
         ---
-        
-        대화 기록:
+
+        Conversation history (JSON):
         ---
         {json.dumps(self.history, ensure_ascii=False)}
         ---
         """
         response = self.model.generate_content(prompt)
-        next_q = response.text.strip()
+        next_q = (response.text or "").strip()
         self.questions.append(next_q)
         return next_q
 
     def _closing_message(self) -> str:
-        return "훌륭한 토론이었습니다. 다른 주제로 다시 이야기 나눠요!"
+        return "Great discussion. Let's switch topics for next time."
 
 
 class ChatManager:
