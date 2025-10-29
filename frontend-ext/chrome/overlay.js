@@ -5,17 +5,56 @@
   const AUTH_MESSAGE_TYPE = 'AUTH_UPDATE';
   const AUTH_SOURCE_WEB = 'chatter-web';
   const AUTH_SOURCE_EXTENSION = 'chatter-extension';
-  const API_BASE = 'https://chatterpals-1gbe.onrender.com/api';
+  const API_BASE = 'https://chatterpals-1.onrender.com/api';
   const ANSWER_ENDPOINT = `${API_BASE}/check-answer`;
-  const TEXT_API_BASE = 'https://chatterpals-1gbe.onrender.com';
-  const QUIZ_ENDPOINT = `${TEXT_API_BASE}/text/quiz/cloze`;
-  const QUESTION_PROMPT = '하이라이트된 표현에 들어갈 영어 단어를 골라보세요.';
+  let TEXT_API_BASE = 'https://chatterpals.onrender.com';
+  let QUIZ_ENDPOINT = `${TEXT_API_BASE}/text/quiz/cloze`;
+  const LANGUAGE_LABELS = { en: '영어', ja: '일본어', zh: '중국어' };
 
   let sidebarIframe = null;
   let fabEl = null;
+  let learningLanguage = 'en';
+
+  function getLanguageLabel(code = learningLanguage) {
+    return LANGUAGE_LABELS[code] || LANGUAGE_LABELS.en;
+  }
+  const TEASE_LINES = ['Need a nudge?', 'Want some help?'];
+
+  function getQuestionPrompt() {
+    switch (learningLanguage) {
+      case 'ja':
+        return '빈칸에 알맞은 일본어 표현을 골라보세요.';
+      case 'zh':
+        return '빈칸에 알맞은 중국어 표현을 골라보세요.';
+      default:
+        return 'Fill the blank in English!';
+    }
+  }
+
+  function getQuestionLines() {
+    switch (learningLanguage) {
+      case 'ja':
+        return ['빈칸에 알맞은 일본어 표현을 골라보세요.', '먼저 생각해 보고 선택해 보세요!'];
+      case 'zh':
+        return ['빈칸에 알맞은 중국어 표현을 골라보세요.', '먼저 생각해 보고 선택해 보세요!'];
+      default:
+        return ['Fill the blank in English!', 'Try guessing first!'];
+    }
+
+  function getAnswerPlaceholder() {
+    switch (learningLanguage) {
+      case 'ja':
+        return '일본어로 답변을 입력하세요';
+      case 'zh':
+        return '중국어로 답변을 입력하세요';
+      default:
+        return '답변을 영어로 입력하세요';
+    }
+  }
+
+  }
 
   const TEASE_LINES = ['Need a nudge?', 'Want some help?'];
-  const QUESTION_LINES = ['Fill the blank in English!', 'Try guessing first!'];
 
   const SKIP_ANCESTOR_SELECTOR =
     'script, style, noscript, code, pre, textarea, input, select, button, option, svg, math, head, iframe, canvas, video, audio, picture';
@@ -93,6 +132,34 @@
     closeBtn: null,
   };
 
+  chrome.storage.local.get(['textApiBase', 'learningLanguage'], (stored) => {
+    if (stored && typeof stored.textApiBase === 'string' && stored.textApiBase.trim()) {
+      TEXT_API_BASE = stored.textApiBase.trim();
+      QUIZ_ENDPOINT = `${TEXT_API_BASE}/text/quiz/cloze`;
+    }
+    if (stored && typeof stored.learningLanguage === 'string' && stored.learningLanguage.trim()) {
+      learningLanguage = stored.learningLanguage.trim();
+    }
+  });
+
+  chrome.storage.onChanged.addListener((changes, areaName) => {
+    if (areaName !== 'local') return;
+    if (Object.prototype.hasOwnProperty.call(changes, 'textApiBase')) {
+      const nextBase = changes.textApiBase.newValue;
+      if (typeof nextBase === 'string' && nextBase.trim()) {
+        TEXT_API_BASE = nextBase.trim();
+        QUIZ_ENDPOINT = `${TEXT_API_BASE}/text/quiz/cloze`;
+      }
+    }
+    if (Object.prototype.hasOwnProperty.call(changes, 'learningLanguage')) {
+      const nextLang = changes.learningLanguage.newValue;
+      if (typeof nextLang === 'string' && nextLang.trim()) {
+        learningLanguage = nextLang.trim();
+      }
+    }
+  });
+
+
   function resetQuizState() {
     overlayState.quizData = null;
     overlayState.quizSelection = null;
@@ -112,9 +179,11 @@
   function sanitizeOption(option) {
     if (typeof option !== 'string') return '';
     const normalized = option.normalize ? option.normalize('NFKC') : option;
-    const cleaned = normalized.replace(/[^A-Za-z'\-\s]/g, '');
-    const collapsed = cleaned.replace(/\s+/g, ' ').trim();
-    return collapsed.slice(0, 48);
+    const collapsed = normalized.replace(/\s+/g, ' ').trim();
+    if (learningLanguage === 'en') {
+      return collapsed.replace(/[^A-Za-z'\-\s]/g, '').trim().slice(0, 48);
+    }
+    return collapsed.slice(0, 24);
   }
 
   function normalizeServerQuiz(payload) {
@@ -145,7 +214,7 @@
 
     const prompt = typeof payload.prompt === 'string' && payload.prompt.trim()
       ? payload.prompt.trim()
-      : QUESTION_PROMPT;
+      : getQuestionPrompt();
     const explanation = typeof payload.explanation === 'string' ? payload.explanation.trim() : null;
     const boundedAnswer = Math.max(0, Math.min(answerIndex, options.length - 1));
 
@@ -163,6 +232,7 @@
       highlight,
       option_count: 3,
       context: overlayState.contextText || sentence,
+      language: learningLanguage,
     };
 
     const response = await fetch(QUIZ_ENDPOINT, {
@@ -189,10 +259,11 @@
     overlayState.quizSelection = index;
     const isCorrect = index === quiz.answerIndex;
     overlayState.quizFeedback = isCorrect
-      ? '정답이에요! 🎉'
-      : '조금 헷갈렸어요. 다시 한번 생각해볼까요?';
+      ? `${getLanguageLabel()} 정답입니다!`
+      : '조금 달랐어요. 다시 시도해 보세요.';
     if (isCorrect && quiz.explanation) {
-      overlayState.quizFeedback += `\n${quiz.explanation}`;
+      overlayState.quizFeedback += `
+${quiz.explanation}`;
     }
     renderOverlayContent();
     updateOverlayPosition();
@@ -1069,7 +1140,7 @@ function cleanupAnchorSignature() {
 
       const answerInput = document.createElement('textarea');
       answerInput.className = 'chatterpals-answer-input';
-      answerInput.placeholder = 'Type your answer in English';
+      answerInput.placeholder = getAnswerPlaceholder();
       answerInput.rows = 3;
       answerInput.addEventListener('input', () => {
         overlayState.answerText = answerInput.value;
@@ -1156,11 +1227,12 @@ function cleanupAnchorSignature() {
 
     const hiddenCount = getMaskedCharCount();
     const quiz = overlayState.quizData;
+    const label = getLanguageLabel();
     const baseSummary = quiz?.prompt
       || overlayState.playfulRemark
       || (hiddenCount
-        ? `문장 전체를 참고해 하이라이트된 ${hiddenCount}자 표현을 자연스러운 영어로 바꿔보세요.`
-        : '문장 전체를 참고해 하이라이트된 표현을 자연스러운 영어로 바꿔보세요.');
+        ? `${label} 표현이 가려진 부분이 ${hiddenCount}자 남아 있어요.`
+        : `${label} 표현을 함께 살펴볼까요?`);
     if (overlayElements.statementSummary) {
       overlayElements.statementSummary.textContent = baseSummary;
     }
@@ -1368,7 +1440,7 @@ function cleanupAnchorSignature() {
     overlayState.visible = true;
     overlayState.mode = mode;
     overlayState.reason = reason;
-    overlayState.lines = mode === 'question' ? [...QUESTION_LINES] : [...TEASE_LINES];
+    overlayState.lines = mode === 'question' ? getQuestionLines() : [...TEASE_LINES];
     overlayState.playfulRemark = '';
     overlayState.answerExpanded = false;
     overlayState.loadingLevel = null;
@@ -1382,7 +1454,7 @@ function cleanupAnchorSignature() {
     overlayState.positionLocked = false;
     resetQuizState();
     if (overlayState.mode === 'question') {
-      overlayState.playfulRemark = QUESTION_PROMPT;
+      overlayState.playfulRemark = getQuestionPrompt();
     }
     const previousAnchor = overlayState.anchorElement;
     const resolvedAnchor = resolveAnchorElement(anchorElement);
@@ -1528,7 +1600,7 @@ async function requestHintForLevel(level) {
     try {
       const quiz = await fetchQuiz(sentence.trim(), highlightCandidate);
       applyQuizResult(quiz);
-      overlayState.playfulRemark = quiz.prompt || QUESTION_PROMPT;
+      overlayState.playfulRemark = quiz.prompt || getQuestionPrompt();
       overlayState.hintPreview = '';
       overlayState.lines = [overlayState.playfulRemark];
     } catch (error) {
@@ -1536,7 +1608,7 @@ async function requestHintForLevel(level) {
       resetQuizState();
       const failureMessage = '질문을 준비하지 못했어요. 잠시 후 다시 시도해 주세요.';
       overlayState.hintPreview = failureMessage;
-      overlayState.playfulRemark = QUESTION_PROMPT;
+      overlayState.playfulRemark = getQuestionPrompt();
       overlayState.lines = [overlayState.playfulRemark, failureMessage];
     } finally {
       overlayState.loadingLevel = null;

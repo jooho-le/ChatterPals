@@ -1,85 +1,101 @@
-import os
+"""Generate summaries and questions in the learner's target language."""
+from __future__ import annotations
+
 import json
+from typing import Any, Dict
+
 import google.generativeai as genai
-from typing import Dict, Any
 
-# Gemini 모델 설정
-# 참고: API 키는 server.py에서 이미 설정했으므로 여기서 다시 설정할 필요는 없습니다.
-# genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
+try:  # pragma: no cover
+    from .language import DEFAULT_LANGUAGE, get_language_config, normalize_language
+except Exception:  # pragma: no cover
+    from language import DEFAULT_LANGUAGE, get_language_config, normalize_language  # type: ignore
 
-def analyze(text: str, max_questions: int = 5) -> Dict[str, Any]:
-    """
-    2단계 처리 방식을 사용하여 텍스트를 분석하고 고품질 질문을 생성합니다.
-    1단계: 텍스트를 요약하고 핵심 키워드를 추출합니다.
-    2단계: 요약본과 키워드를 바탕으로 다양한 유형의 질문을 생성합니다.
-    """
+SUMMARY_PROMPT_TEMPLATE = """
+You are a senior news editor who always writes in {output_language}.
+Read the article below and return strict JSON with:
+  - "summary": a concise {output_language} summary in 3-4 sentences.
+  - "keywords": an array with the five most important topics in {output_language}.
+Return JSON only without markdown fences or commentary.
+
+Article:
+---
+{truncated_text}
+---
+
+JSON:
+"""
+
+QUESTION_PROMPT_TEMPLATE = """
+You are a {teacher_title} supporting a {learner_label}.
+Use the summary and key topics to craft {question_count} discussion questions in {output_language}.
+Include a mix of factual, inferential, and evaluative prompts.
+Return only JSON with a "questions" array of {output_language} strings.
+
+Summary:
+---
+{summary}
+---
+
+Key topics: {topics}
+
+JSON:
+"""
+
+FALLBACK_QUESTION_PROMPT = """
+Create {count} short discussion questions in {output_language} based on the passage below.
+Return each question on its own line using {output_language}.
+
+Passage:
+{passage}
+"""
+
+
+def analyze(text: str, max_questions: int = 5, language: str = DEFAULT_LANGUAGE) -> Dict[str, Any]:
+    """Produce a summary, topics, and optional discussion questions."""
+    normalized_language = normalize_language(language)
+    language_config = get_language_config(normalized_language)
+    output_language = language_config["llm_language"]
+
     if not text:
-        return {"summary": "", "topics": [], "questions": []}
+        return {"summary": "", "topics": [], "questions": [], "language": normalized_language}
 
     try:
-        # --- 1단계: "요약 전문가" AI ---
-        summarizer_model = genai.GenerativeModel('gemini-2.0-flash-lite-preview')
-        
-        summarizer_prompt = f"""
-        You are a senior news editor. Read the text and return a strict JSON object.
-
-        1. `summary`: Provide a concise summary in natural English (3-4 sentences).
-        2. `keywords`: Extract 5 key topics in English, ordered by importance.
-
-        Text:
-        ---
-        {text[:10000]}
-        ---
-
-        JSON output only:
-        """
-
+        summarizer_model = genai.GenerativeModel("gemini-2.0-flash-lite-preview")
+        summarizer_prompt = SUMMARY_PROMPT_TEMPLATE.format(
+            output_language=output_language,
+            truncated_text=text[:10000],
+        )
         summary_response = summarizer_model.generate_content(summarizer_prompt)
-        
-        # AI가 생성한 JSON 문자열을 파싱
-        # 때때로 AI가 코드 블록 마크다운을 포함하므로 제거
-        cleaned_json_str = summary_response.text.strip().replace('```json', '').replace('```', '').strip()
-        summary_data = json.loads(cleaned_json_str)
-        
-        summary = summary_data.get("summary", "")
+        cleaned_summary = summary_response.text.strip().replace("```json", "").replace("```", "").strip()
+        summary_data = json.loads(cleaned_summary)
+
+        summary = str(summary_data.get("summary", "")).strip()
         keywords = summary_data.get("keywords", [])
 
         if not summary:
-             raise ValueError("1단계 요약 생성에 실패했습니다.")
+            raise ValueError("Empty summary returned from language model.")
 
         if max_questions <= 0:
             return {
                 "summary": summary,
                 "topics": keywords,
                 "questions": [],
+                "language": normalized_language,
             }
 
-        # --- 2단계: "질문 생성가" AI ---
-        question_generator_model = genai.GenerativeModel('gemini-2.0-flash-lite-preview')
-
-        question_generator_prompt = f"""
-        당신은 학생들의 비판적 사고력을 키우는 최고의 영어 교사입니다. 학생들을 위해서 질문은 영어로 만들어주세요
-        아래에 제공된 "핵심 요약"과 "주요 키워드"를 바탕으로, 다음 세 가지 유형의 질문을 합해서 총 {max_questions}개 생성해 주세요.
-
-        1. **사실 확인 질문 (Factual Questions):** 요약된 내용에서 답을 직접 찾을 수 있는 질문.
-        2. **추론 질문 (Inferential Questions):** 내용에 암시된 의미나 저자의 의도를 파악해야 하는 질문.
-        3. **평가 질문 (Evaluative Questions):** 독자의 개인적인 의견이나 가치 판단을 묻는 질문.
-
-        질문은 반드시 "주요 키워드"와 관련된 내용이어야 합니다. 결과는 JSON 형식의 질문 목록으로만 반환해 주세요.
-
-        핵심 요약:
-        ---
-        {summary}
-        ---
-
-        주요 키워드: {", ".join(keywords)}
-
-        JSON 출력 (질문 목록):
-        """
-        
-        questions_response = question_generator_model.generate_content(question_generator_prompt)
-        cleaned_json_str = questions_response.text.strip().replace('```json', '').replace('```', '').strip()
-        raw_questions = json.loads(cleaned_json_str)
+        generator_model = genai.GenerativeModel("gemini-2.0-flash-lite-preview")
+        question_prompt = QUESTION_PROMPT_TEMPLATE.format(
+            teacher_title=language_config["teacher_title"],
+            learner_label=language_config["learner_label"],
+            question_count=max_questions,
+            output_language=output_language,
+            summary=summary,
+            topics=", ".join(keywords) if isinstance(keywords, list) else str(keywords),
+        )
+        questions_response = generator_model.generate_content(question_prompt)
+        cleaned_questions = questions_response.text.strip().replace("```json", "").replace("```", "").strip()
+        raw_questions = json.loads(cleaned_questions)
 
         if isinstance(raw_questions, dict):
             questions_list = raw_questions.get("questions") or raw_questions.get("items") or []
@@ -95,25 +111,35 @@ def analyze(text: str, max_questions: int = 5) -> Dict[str, Any]:
 
         return {
             "summary": summary,
-            "topics": keywords, # 기존 'topics' 키에 키워드를 할당
+            "topics": keywords,
             "questions": questions_list,
+            "language": normalized_language,
         }
 
-    except Exception as e:
-        print(f"AI 분석 중 오류 발생: {e}")
-        # 오류 발생 시, 간단한 분석으로 대체 (Fallback)
+    except Exception as primary_error:
+        print(f"[analyze] primary analysis failed: {primary_error}")
         try:
-            model = genai.GenerativeModel('gemini-2.0-flash-lite-preview')
-            prompt = f"다음 텍스트에서 토론 질문 {max_questions}개를 만들어줘: {text[:2000]}"
-            response = model.generate_content(prompt)
-            # 간단한 텍스트 분리
-            questions = [q.strip() for q in response.text.split('\n') if q.strip()]
+            fallback_model = genai.GenerativeModel("gemini-2.0-flash-lite-preview")
+            prompt = FALLBACK_QUESTION_PROMPT.format(
+                count=max(0, max_questions),
+                output_language=output_language,
+                passage=text[:2000],
+            )
+            response = fallback_model.generate_content(prompt)
+            questions = [line.strip() for line in response.text.splitlines() if line.strip()]
             trimmed = questions[:max(0, max_questions)] if max_questions else []
+            summary_seed = text[:200] + "..." if len(text) > 200 else text
             return {
-                "summary": text[:200] + "...",
+                "summary": summary_seed,
                 "topics": [],
                 "questions": trimmed,
+                "language": normalized_language,
             }
-        except Exception as fallback_e:
-            print(f"Fallback 분석 중 오류 발생: {fallback_e}")
-            return {"summary": "분석 중 오류가 발생했습니다.", "topics": [], "questions": []}
+        except Exception as fallback_error:
+            print(f"[analyze] fallback analysis failed: {fallback_error}")
+            return {
+                "summary": "Failed to generate a summary.",
+                "topics": [],
+                "questions": [],
+                "language": normalized_language,
+            }

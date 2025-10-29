@@ -1,8 +1,26 @@
 // ChatterPals Extension Frontend Script
-const AUTH_MESSAGE_TYPE = 'AUTH_UPDATE';
-const AUTH_SOURCE_EXTENSION = 'chatter-extension';
-const HOMEPAGE_URL = 'https://chatterpals-sw.web.app/';
+const DEFAULT_LANGUAGE = 'en';
+const SUPPORTED_LANGUAGES = {
+    en: { code: 'en', label: '영어' },
+    ja: { code: 'ja', label: '일본어' },
+    zh: { code: 'zh', label: '중국어' },
+};
 
+function normalizeLanguageCode(code) {
+    if (!code) return DEFAULT_LANGUAGE;
+    const lowered = String(code).trim().toLowerCase();
+    if (SUPPORTED_LANGUAGES[lowered]) return lowered;
+    if (lowered.startsWith('ko')) return 'en'; // 기본 학습 언어가 영어이므로 ko -> en
+    if (lowered.startsWith('en')) return 'en';
+    if (lowered.startsWith('ja') || lowered === 'jp') return 'ja';
+    if (lowered.startsWith('zh') || lowered === 'cn') return 'zh';
+    return DEFAULT_LANGUAGE;
+}
+
+function getLanguageMeta(code) {
+    const normalized = normalizeLanguageCode(code);
+    return SUPPORTED_LANGUAGES[normalized];
+}
 document.addEventListener('DOMContentLoaded', () => {
     'use strict';
     const urlParams = new URLSearchParams(window.location.search);
@@ -54,7 +72,11 @@ function initializeSidebar() {
     const questionBtn = document.getElementById('question');
     const analyzeAllBtn = document.getElementById('analyzeAll');
     const questionCountSelect = document.getElementById('question-count-select');
-    const chatQuestionLimitSelect = document.getElementById('chat-question-limit');
+    const questionCountStep = document.getElementById('question-count-step');
+    const confirmGenerateBtn = document.getElementById('confirm-generate');
+    const cancelGenerateBtn = document.getElementById('cancel-generate');
+    // 토론 질문 수는 고정값 사용
+    const CHAT_QUESTION_LIMIT = 5;
     const analysisChoice = document.getElementById('analysis-choice');
     const questionFlowBtn = document.getElementById('start-question-flow');
     const chatStartBtn = document.getElementById('chatStart');
@@ -74,7 +96,8 @@ function initializeSidebar() {
     const chatVocabScore = document.getElementById('chat-vocab-score');
     const chatClarityScore = document.getElementById('chat-clarity-score');
     const chatFeedback = document.getElementById('chat-feedback');
-    const chatLimitDisplay = document.getElementById('chat-limit-display');
+    const languageSelect = document.getElementById('learning-language');
+    // 질문 수 표시 제거됨
     const recordBtn = document.getElementById('recordBtn');
     const voiceStatus = document.getElementById('voiceStatus');
     const userTranscript = document.getElementById('userTranscript');
@@ -88,14 +111,17 @@ function initializeSidebar() {
     const accountSignedIn = document.getElementById('account-signed-in');
     const accountNickname = document.getElementById('account-nickname');
     const logoutBtn = document.getElementById('logoutBtn');
-    const homepageLink = document.querySelector('.homepage-link');
     const toastEl = document.getElementById('toast');
 
     // --- 서버 주소 설정 ---
-    const TEXT_API_SERVER = 'https://chatterpals.onrender.com';
+    // 기본값은 로컬 통합 서버의 Text 앱(prefix: /text)
+    let TEXT_API_SERVER = 'https://chatterpals.onrender.com';
     const VOICE_API_SERVER = 'https://chatterpals-1.onrender.com';
 
+    // chrome.storage.local에 textApiBase가 있으면 우선 사용
+
     // --- 상태 변수 ---
+    let learningLanguage = DEFAULT_LANGUAGE;
     let lastAnalyzedText = '';
     let lastAnalysisResult = null;
     let lastEvaluationResult = null;
@@ -109,27 +135,101 @@ function initializeSidebar() {
     let chatActive = false;
     let toastTimeoutId = null;
 
+    function getLanguageLabel(code = learningLanguage) {
+        return getLanguageMeta(code).label;
+    }
+
+    function applyLanguage(code, options = {}) {
+        const { persist = true } = options;
+        const meta = getLanguageMeta(code);
+        learningLanguage = meta.code;
+        if (languageSelect && languageSelect.value !== learningLanguage) {
+            languageSelect.value = learningLanguage;
+        }
+        if (answerInput) {
+            answerInput.placeholder = `${meta.label}로 답변을 입력하세요`;
+        }
+        if (!isRecording && !isProcessing && voiceStatus) {
+            voiceStatus.textContent = `버튼을 눌러 ${meta.label}로 연습을 시작하세요.`;
+        }
+        if (persist) {
+            chrome.storage.local.set({ learningLanguage });
+        }
+    }
+
+    if (languageSelect) {
+        languageSelect.addEventListener('change', (event) => {
+            applyLanguage(event.target.value);
+        });
+    }
+
+    chrome.storage.local.get(['textApiBase', 'learningLanguage'], (stored) => {
+        if (stored && typeof stored.textApiBase === "string" && stored.textApiBase.trim()) {
+            TEXT_API_SERVER = stored.textApiBase.trim();
+            console.log('[popup] Using stored TEXT_API_SERVER =', TEXT_API_SERVER);
+        }
+        const storedLanguage = stored && typeof stored.learningLanguage === "string"
+            ? stored.learningLanguage
+            : learningLanguage;
+        applyLanguage(storedLanguage, { persist: false });
+    });
+
+    // 자동 분석 트리거: 저장된 컨텍스트가 있으면 사용, 없으면 현재 탭 URL로 분석
+    let analysisStarted = false;
     chrome.storage.local.get('contextDataForSidebar', (result) => {
         const payload = result.contextDataForSidebar || null;
-        if (!payload) return;
-        const incomingUrl = typeof payload.url === 'string' ? payload.url.trim() : '';
-        const incomingText = typeof payload.text === 'string' ? payload.text.trim() : '';
+        const incomingUrl = payload && typeof payload.url === 'string' ? payload.url.trim() : '';
+        const incomingText = payload && typeof payload.text === 'string' ? payload.text.trim() : '';
 
         if (incomingUrl) {
-            resultDiv.textContent = '페이지에서 본문을 추출하고 요약 중입니다...';
+            analysisStarted = true;
+            resultDiv.textContent = '페이지를 자동으로 요약 중입니다...';
             analyzeUrlForSummary(incomingUrl);
         } else if (incomingText) {
+            analysisStarted = true;
             lastAnalyzedText = incomingText;
             analyzeTextForSummary(lastAnalyzedText);
         }
-        chrome.storage.local.remove('contextDataForSidebar');
+        if (payload) chrome.storage.local.remove('contextDataForSidebar');
+
+        if (!analysisStarted) {
+            tryAutoAnalyzeFromActiveTab();
+        }
     });
 
+    function tryAutoAnalyzeFromActiveTab() {
+        resultDiv.textContent = '페이지를 자동으로 요약 중입니다...';
+        chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+            const tab = tabs && tabs[0];
+            const url = tab && typeof tab.url === 'string' ? tab.url : '';
+            if (url && /^https?:\/\//i.test(url)) {
+                analyzeUrlForSummary(url);
+            } else {
+                fallbackAnalyzeFromPageText();
+            }
+        });
+    }
+
     // --- 이벤트 리스너 ---
-    questionBtn.addEventListener('click', () => handlePageTextRequest('selection'));
-    analyzeAllBtn.addEventListener('click', () => handlePageTextRequest('fullPage'));
+    if (questionBtn) questionBtn.addEventListener('click', () => handlePageTextRequest('selection'));
+    if (analyzeAllBtn) analyzeAllBtn.addEventListener('click', () => handlePageTextRequest('fullPage'));
     if (questionFlowBtn) {
-        questionFlowBtn.addEventListener('click', () => generateQuestions(lastAnalyzedText));
+        questionFlowBtn.addEventListener('click', () => {
+            // 질문 개수 선택 단계 표시
+            analysisChoice.style.display = 'none';
+            questionCountStep.style.display = 'flex';
+            resultDiv.textContent = '질문 개수를 선택하고 생성 버튼을 눌러주세요.';
+        });
+    }
+    if (confirmGenerateBtn) {
+        confirmGenerateBtn.addEventListener('click', () => generateQuestions(lastAnalyzedText));
+    }
+    if (cancelGenerateBtn) {
+        cancelGenerateBtn.addEventListener('click', () => {
+            questionCountStep.style.display = 'none';
+            analysisChoice.style.display = 'flex';
+            resultDiv.textContent = '요약이 준비되었습니다. 질문 생성 또는 토론 시작을 선택하세요.';
+        });
     }
     evaluateBtn.addEventListener('click', handleEvaluation);
     saveBtn.addEventListener('click', handleSaveEvaluation);
@@ -137,18 +237,11 @@ function initializeSidebar() {
     sendBtn.addEventListener('click', sendReply);
     chatEndBtn.addEventListener('click', handleChatEnd);
     recordBtn.addEventListener('click', handleRecordClick);
-    closeSidebarBtn.addEventListener('click', () => { // 닫기 버튼 이벤트 리스너 추가
-    // content.js에 사이드바를 닫으라는 메시지를 보냅니다.
-    chrome.runtime.sendMessage({ action: 'closeSidebar' });
+    closeSidebarBtn.addEventListener('click', () => {
+        chrome.runtime.sendMessage({ action: 'closeSidebar' });
     });
     loginForm.addEventListener('submit', onLoginSubmit);
     logoutBtn.addEventListener('click', handleLogout);
-    if (homepageLink) {
-        homepageLink.addEventListener('click', (event) => {
-            event.preventDefault();
-            openHomepageWithAuth();
-        });
-    }
 
     chrome.storage.local.get(['authToken', 'authUser'], async (stored) => {
         if (stored.authToken) {
@@ -173,6 +266,12 @@ function initializeSidebar() {
         if (areaName !== 'local') return;
         let shouldFetchUser = false;
         console.log('[popup] storage changed', changes);
+        if (Object.prototype.hasOwnProperty.call(changes, 'learningLanguage')) {
+            const nextLang = changes.learningLanguage.newValue;
+            if (typeof nextLang === 'string') {
+                applyLanguage(nextLang, { persist: false });
+            }
+        }
 
         if (Object.prototype.hasOwnProperty.call(changes, 'authToken')) {
             authToken = changes.authToken.newValue || null;
@@ -203,14 +302,14 @@ function initializeSidebar() {
     });
 
     function handlePageTextRequest(type) {
-        const message = type === 'selection' ? '선택된 텍스트를 분석 중...' : '페이지 전체 텍스트를 분석 중...';
+        const message = type === 'selection' ? '선택한 텍스트를 분석하고 있어요...' : '페이지 전체를 분석하고 있어요...';
         resultDiv.textContent = message;
         chrome.runtime.sendMessage({ action: 'getTextFromPage', type }, (response) => {
             if (response && response.text && response.text.trim()) {
                 lastAnalyzedText = response.text.trim();
                 analyzeTextForSummary(lastAnalyzedText);
             } else {
-                resultDiv.textContent = '분석할 텍스트가 없습니다.';
+                resultDiv.textContent = '분석할 텍스트를 찾지 못했습니다.';
             }
         });
     }
@@ -221,19 +320,20 @@ function initializeSidebar() {
         questionsDiv.innerHTML = '';
         actionButtons.style.display = 'none';
         analysisChoice.style.display = 'none';
+        questionCountStep.style.display = 'none';
         chatDiv.style.display = 'none';
         chatEvaluationBox.style.display = 'none';
         chatActive = false;
         sidSpan.textContent = '-';
-        qSpan.textContent = '(없음)';
+        qSpan.textContent = '(대기중)';
         summaryView.style.display = 'none';
-        resultDiv.textContent = 'AI가 텍스트를 분석 중입니다...';
+        resultDiv.textContent = 'AI가 텍스트를 분석하는 중입니다...';
 
         try {
             const response = await fetch(`${TEXT_API_SERVER}/questions`, {
                 method: 'POST',
                 headers: buildHeaders({ 'Content-Type': 'application/json' }),
-                body: JSON.stringify({ text, max_questions: 0 }),
+                body: JSON.stringify({ text, max_questions: 0, language: learningLanguage }),
             });
             if (!response.ok) throw new Error(`서버 오류: ${response.status}`);
             const data = await response.json();
@@ -241,10 +341,11 @@ function initializeSidebar() {
             summaryDiv.textContent = data.summary;
             topicsDiv.innerHTML = (data.topics || []).map(topic => `<span class="topic-tag">${topic}</span>`).join('');
             summaryView.style.display = 'block';
-            resultDiv.textContent = '요약이 준비되었습니다. 질문 생성 또는 토론 시작을 선택하세요.';
+            resultDiv.textContent = '요약이 준비되었습니다. 질문 생성 또는 토론을 선택하세요.';
             analysisChoice.style.display = 'flex';
+            questionCountStep.style.display = 'none';
         } catch (error) {
-            resultDiv.textContent = '텍스트 분석 서버에 연결할 수 없습니다.';
+            resultDiv.textContent = '지문 분석 중 문제가 발생했습니다.';
             console.error('요약 분석 실패:', error);
         }
     }
@@ -259,19 +360,19 @@ function initializeSidebar() {
         chatEvaluationBox.style.display = 'none';
         chatActive = false;
         sidSpan.textContent = '-';
-        qSpan.textContent = '(없음)';
+        qSpan.textContent = '(대기중)';
         summaryView.style.display = 'none';
 
         try {
             const response = await fetch(`${TEXT_API_SERVER}/analyze_url`, {
                 method: 'POST',
                 headers: buildHeaders({ 'Content-Type': 'application/json' }),
-                body: JSON.stringify({ url, max_questions: 0 }),
+                body: JSON.stringify({ url, max_questions: 0, language: learningLanguage }),
             });
             if (!response.ok) {
                 let detail = '';
                 try { const j = await response.json(); detail = j?.detail || ''; } catch {}
-                console.warn('URL 분석 응답 에러', response.status, detail);
+                console.warn('URL 분석 응답 오류', response.status, detail);
                 await fallbackAnalyzeFromPageText();
                 return;
             }
@@ -281,7 +382,7 @@ function initializeSidebar() {
             summaryDiv.textContent = data.summary;
             topicsDiv.innerHTML = (data.topics || []).map(topic => `<span class="topic-tag">${topic}</span>`).join('');
             summaryView.style.display = 'block';
-            resultDiv.textContent = '요약이 준비되었습니다. 질문 생성 또는 토론 시작을 선택하세요.';
+            resultDiv.textContent = '요약이 준비되었습니다. 질문 생성 또는 토론을 선택하세요.';
             analysisChoice.style.display = 'flex';
         } catch (error) {
             console.error('URL 요약 분석 실패:', error);
@@ -297,7 +398,7 @@ function initializeSidebar() {
                     await analyzeTextForSummary(text);
                     resolve();
                 } else {
-                    resultDiv.textContent = '자동 추출에 실패했습니다. 기사 본문을 드래그해서 선택한 뒤 다시 시도해 주세요.';
+                    resultDiv.textContent = '본문을 찾지 못했습니다. 기사 본문을 드래그하여 선택한 뒤 다시 시도해 주세요.';
                     resolve();
                 }
             });
@@ -306,10 +407,10 @@ function initializeSidebar() {
 
     async function generateQuestions(text) {
         if (!text || !text.trim()) {
-            resultDiv.textContent = '먼저 텍스트를 분석해주세요.';
+            resultDiv.textContent = '먼저 텍스트를 분석해 주세요.';
             return;
         }
-        resultDiv.textContent = 'AI가 질문을 만들고 있습니다...';
+        resultDiv.textContent = 'AI가 질문을 생성하는 중입니다...';
         questionsDiv.innerHTML = '';
         actionButtons.style.display = 'none';
         evaluateBtn.disabled = true;
@@ -318,12 +419,13 @@ function initializeSidebar() {
         analysisChoice.style.display = 'none';
 
         const questionCount = parseInt(questionCountSelect.value, 10);
+        const languageLabel = getLanguageLabel();
 
         try {
             const response = await fetch(`${TEXT_API_SERVER}/questions`, {
                 method: 'POST',
                 headers: buildHeaders({ 'Content-Type': 'application/json' }),
-                body: JSON.stringify({ text, max_questions: questionCount }),
+                body: JSON.stringify({ text, max_questions: questionCount, language: learningLanguage }),
             });
             if (!response.ok) throw new Error(`서버 오류: ${response.status}`);
             const data = await response.json();
@@ -333,19 +435,19 @@ function initializeSidebar() {
             topicsDiv.innerHTML = (data.topics || []).map(topic => `<span class="topic-tag">${topic}</span>`).join('');
             summaryView.style.display = 'block';
 
-            resultDiv.textContent = `질문 ${data.questions.length}개를 생성했습니다. 답변을 입력하고 평가받으세요.`;
+            resultDiv.textContent = `질문 ${data.questions.length}개가 생성되었습니다. 답변을 입력하고 평가를 요청해 주세요.`;
             questionsDiv.innerHTML = (data.questions || []).map((q, index) => {
                 const questionText = typeof q === 'object' ? q.question : q;
                 return `
                 <div class="question-item" data-index="${index}">
                     <div class="question-text">${index + 1}. ${questionText}</div>
-                    <textarea class="question-answer" placeholder="답변을 입력하세요..."></textarea>
+                    <textarea class="question-answer" placeholder="${languageLabel}로 답변을 입력하세요..."></textarea>
                     <div class="evaluation-result">
                         <div class="evaluation-scores">
                              <span class="score-item">총점: <span class="total-score value"></span></span>
                              <span class="score-item">문법: <span class="grammar-score value"></span></span>
                              <span class="score-item">어휘: <span class="vocab-score value"></span></span>
-                             <span class="score-item">논리: <span class="clarity-score value"></span></span>
+                             <span class="score-item">명료도: <span class="clarity-score value"></span></span>
                         </div>
                         <p class="feedback-text"></p>
                     </div>
@@ -360,9 +462,8 @@ function initializeSidebar() {
             analysisChoice.style.display = 'flex';
         }
     }
-
     async function handleEvaluation() {
-        resultDiv.textContent = 'AI가 답변을 평가 중입니다...';
+        resultDiv.textContent = 'AI가 답변을 평가하는 중입니다...';
         evaluateBtn.disabled = true;
         saveBtn.disabled = true;
 
@@ -376,18 +477,18 @@ function initializeSidebar() {
             const response = await fetch(`${TEXT_API_SERVER}/evaluate/answers`, {
                 method: 'POST',
                 headers: buildHeaders({ 'Content-Type': 'application/json' }),
-                body: JSON.stringify({ items: itemsToEvaluate })
+                body: JSON.stringify({ items: itemsToEvaluate, language: learningLanguage })
             });
-            if (!response.ok) throw new Error('평가 서버에서 오류가 발생했습니다.');
+            if (!response.ok) throw new Error('채점 요청 처리 중 오류가 발생했습니다.');
             
             const data = await response.json();
             lastEvaluationResult = data.evaluations;
             displayEvaluationResults(data.evaluations);
 
-            resultDiv.textContent = '평가가 완료되었습니다. 결과를 저장할 수 있습니다.';
+            resultDiv.textContent = '채점이 완료되었습니다. 결과를 확인해 주세요.';
             saveBtn.disabled = false;
         } catch (error) {
-            resultDiv.textContent = `평가 실패: ${error.message}`;
+            resultDiv.textContent = `채점 실패: ${error.message}`;
         } finally {
             evaluateBtn.disabled = false;
         }
@@ -410,75 +511,75 @@ function initializeSidebar() {
         });
     }
 //--평가함수--//
-    async function handleSaveEvaluation() {
+async function handleSaveEvaluation() {
         if (!lastEvaluationResult) {
-            resultDiv.textContent = '저장할 평가 결과가 없습니다. 먼저 평가를 진행해주세요.';
+            resultDiv.textContent = '저장할 평가 결과가 없습니다. 먼저 채점을 진행해 주세요.';
             return;
         }
         if (!authToken) {
-            resultDiv.textContent = '평가 결과를 저장하려면 먼저 로그인하세요.';
+            resultDiv.textContent = '평가 결과를 저장하려면 먼저 로그인해 주세요.';
             loginStatus.textContent = '로그인이 필요합니다.';
             return;
         }
-        resultDiv.textContent = '평가 결과를 저장하는 중...';
+        resultDiv.textContent = '평가 결과를 저장하는 중입니다...';
         saveBtn.disabled = true;
 
         const payload = {
             summary: lastAnalysisResult.summary,
             topics: lastAnalysisResult.topics,
             items: lastEvaluationResult,
-            source_text: lastAnalyzedText.substring(0, 4000)
+            source_text: lastAnalyzedText.substring(0, 4000),
+            language: learningLanguage,
         };
 
         try {
             const response = await fetch(`${TEXT_API_SERVER}/records/save_evaluation`, {
                 method: 'POST',
                 headers: buildHeaders({ 'Content-Type': 'application/json' }),
-                body: JSON.stringify(payload)
+                body: JSON.stringify(payload),
             });
             if (!response.ok) {
-                 const err = await response.json();
+                const err = await response.json().catch(() => ({}));
                 throw new Error(err.detail || `서버 오류: ${response.status}`);
             }
             const savedRecord = await response.json();
-            resultDiv.textContent = `성공적으로 저장되었습니다! (ID: ${savedRecord.id.substring(0, 8)})`;
+            resultDiv.textContent = `평가 기록이 저장되었습니다! (ID: ${savedRecord.id.substring(0, 8)})`;
         } catch (error) {
             resultDiv.textContent = `저장 실패: ${error.message}`;
             saveBtn.disabled = false;
         }
     }
-//--토론세션--//
     async function startChatSession() {
         let textForChat = lastAnalyzedText;
         if (!textForChat) {
             textForChat = window.getSelection().toString().trim();
         }
         if (!textForChat) {
-            resultDiv.textContent = '토론을 시작할 텍스트를 먼저 분석하거나, 페이지에서 텍스트를 선택해주세요.';
+            resultDiv.textContent = '토론을 시작하려면 텍스트를 먼저 분석하거나 화면에서 텍스트를 선택해 주세요.';
             return;
         }
 
-        resultDiv.textContent = '채팅 세션을 시작합니다...';
+        resultDiv.textContent = '채팅 세션을 준비하고 있습니다...';
         try {
             const response = await fetch(`${TEXT_API_SERVER}/chat/start`, {
                 method: 'POST',
                 headers: buildHeaders({ 'Content-Type': 'application/json' }),
                 body: JSON.stringify({
                     text: textForChat,
-                    max_questions: parseInt(chatQuestionLimitSelect.value, 10),
+                    max_questions: CHAT_QUESTION_LIMIT,
+                    language: learningLanguage,
                 }),
             });
             if (!response.ok) {
                 const errData = await response.json();
-                throw new Error(errData.detail || '채팅 서버 연결 실패');
+                throw new Error(errData.detail || '채팅 세션 생성에 실패했습니다.');
             }
             const data = await response.json();
             currentSessionId = data.session_id;
             currentRecordId = data.record_id;
             sidSpan.textContent = currentSessionId.substring(0, 8);
-            qSpan.textContent = data.question;
+            qSpan.textContent = toPlainChat(data.question);
             chatDiv.style.display = 'block';
-            chatLimitDisplay.textContent = chatQuestionLimitSelect.value;
             resultDiv.textContent = '채팅이 시작되었습니다.';
             chatActive = true;
             chatEndBtn.style.display = 'inline-flex';
@@ -501,18 +602,19 @@ function initializeSidebar() {
             const response = await fetch(`${TEXT_API_SERVER}/chat/reply`, {
                 method: 'POST',
                 headers: buildHeaders({ 'Content-Type': 'application/json' }),
-                body: JSON.stringify({ session_id: currentSessionId, answer: answer }),
+                body: JSON.stringify({ session_id: currentSessionId, answer, language: learningLanguage }),
             });
             const data = await response.json();
             if (data.error) throw new Error(data.error);
-            qSpan.textContent = data.question;
+            qSpan.textContent = toPlainChat(data.question);
             answerInput.value = '';
             if (data.done) {
                 finalizeChat(data.record_id);
+            resultDiv.textContent = '토론이 종료되었습니다.';
             }
         } catch (error) {
-             qSpan.textContent = '오류가 발생했습니다.';
-             console.error('채팅 응답 API 호출 실패:', error);
+            qSpan.textContent = '오류가 발생했습니다.';
+            console.error('채팅 응답 API 호출 실패:', error);
         }
     }
 
@@ -523,14 +625,14 @@ function initializeSidebar() {
             const response = await fetch(`${TEXT_API_SERVER}/chat/end`, {
                 method: 'POST',
                 headers: buildHeaders({ 'Content-Type': 'application/json' }),
-                body: JSON.stringify({ session_id: currentSessionId }),
+                body: JSON.stringify({ session_id: currentSessionId, language: learningLanguage }),
             });
             if (!response.ok) {
                 const err = await response.json().catch(() => ({}));
                 throw new Error(err.detail || '세션을 종료하지 못했습니다.');
             }
             const data = await response.json();
-            qSpan.textContent = data.message || '토론이 종료되었습니다.';
+            qSpan.textContent = toPlainChat(data.message || '토론이 종료되었습니다.');
             finalizeChat(data.record_id);
         } catch (error) {
             resultDiv.textContent = `종료 실패: ${error.message}`;
@@ -557,18 +659,18 @@ function initializeSidebar() {
             chatGrammarScore.textContent = '-';
             chatVocabScore.textContent = '-';
             chatClarityScore.textContent = '-';
-            chatFeedback.textContent = '로그인하면 토론 평가 결과를 확인할 수 있습니다.';
+            chatFeedback.textContent = '로그인하면 토론 평가를 확인할 수 있어요.';
             return;
         }
         try {
             const response = await fetch(`${TEXT_API_SERVER}/chat/evaluate`, {
                 method: 'POST',
                 headers: buildHeaders({ 'Content-Type': 'application/json' }),
-                body: JSON.stringify({ record_id: recordId }),
+                body: JSON.stringify({ record_id: recordId, language: learningLanguage }),
             });
             if (!response.ok) {
                 const err = await response.json().catch(() => ({}));
-                throw new Error(err.detail || '토론 평가에 실패했습니다.');
+                throw new Error(err.detail || '토론 평가 요청에 실패했습니다.');
             }
             const data = await response.json();
             displayDiscussionEvaluation(data.evaluation);
@@ -577,7 +679,7 @@ function initializeSidebar() {
             chatGrammarScore.textContent = '-';
             chatVocabScore.textContent = '-';
             chatClarityScore.textContent = '-';
-            chatFeedback.textContent = error instanceof Error ? error.message : '평가를 불러오지 못했습니다.';
+            chatFeedback.textContent = error instanceof Error ? error.message : '평가 결과를 불러오지 못했습니다.';
         }
     }
 
@@ -635,12 +737,12 @@ function initializeSidebar() {
 
     async function handleRecordingData(audioDataUrl) {
         if (isProcessing) {
-            console.log("이미 음성 처리 요청이 진행 중입니다. 중복 요청을 무시합니다.");
+            console.log('이미 음성 처리 요청이 진행 중입니다. 중복 요청을 무시합니다.');
             return;
         }
         isProcessing = true;
 
-        voiceStatus.textContent = '음성을 인식하는 중...';
+        voiceStatus.textContent = '음성을 인식하는 중입니다...';
         userTranscript.textContent = '';
         aiResponse.textContent = '';
         aiAudioPlayer.style.display = 'none';
@@ -650,6 +752,7 @@ function initializeSidebar() {
             const audioBlob = await (await fetch(audioDataUrl)).blob();
             const formData = new FormData();
             formData.append('audio', audioBlob, 'recording.webm');
+            formData.append('language', learningLanguage);
 
             const response = await fetch(`${VOICE_API_SERVER}/api/get-ai-response`, {
                 method: 'POST',
@@ -662,20 +765,20 @@ function initializeSidebar() {
             const result = await response.json();
             userTranscript.textContent = result.transcript;
             aiResponse.textContent = result.response_text;
-
+            voiceStatus.textContent = 'AI 답변을 재생합니다.';
             voiceStatus.textContent = 'AI 답변을 재생합니다.';
             const ttsBlob = await getTtsAudio(result.response_text);
-            playAudio(ttsBlob);
+            voiceStatus.textContent = '완료되었습니다. 다시 질문하려면 버튼을 눌러 주세요.';
             voiceStatus.textContent = '완료. 다시 질문하려면 버튼을 누르세요.';
-        } catch (error) {
             console.error('음성 처리 파이프라인 오류:', error);
+            voiceStatus.textContent = `오류 발생: ${error.message}`;
             voiceStatus.textContent = `오류 발생: ${error.message}`;
         } finally {
             isProcessing = false;
         }
     }
 
-    function playAudio(blob) {
+function playAudio(blob) {
         if (currentAudioUrl) {
             URL.revokeObjectURL(currentAudioUrl);
         }
@@ -684,21 +787,35 @@ function initializeSidebar() {
 
         aiAudioPlayer.src = newAudioUrl;
         aiAudioPlayer.style.display = 'block';
-        aiAudioPlayer.play().catch(e => console.error("오디오 자동 재생 실패:", e));
+        aiAudioPlayer.play().catch(e => console.error('오디오 자동 재생 실패:', e));
     }
 
     async function getTtsAudio(text) {
-        const response = await fetch(`${VOICE_API_SERVER}/api/tts?text=${encodeURIComponent(text)}`);
-        if (!response.ok) throw new Error('TTS 오디오를 가져오지 못했습니다.');
+        const response = await fetch(`${VOICE_API_SERVER}/api/tts?text=${encodeURIComponent(text)}&language=${learningLanguage}`);
+        if (!response.ok) throw new Error('TTS 데이터를 가져오지 못했습니다.');
         return response.blob();
     }
-
     function buildHeaders(base = {}) {
         const headers = { ...base };
         if (authToken) {
             headers.Authorization = `Bearer ${authToken}`;
         }
+        headers['X-Learning-Language'] = learningLanguage;
         return headers;
+    }
+
+    // 채팅 표시용: 마크다운/헤딩 제거하여 한 문장으로 정리
+    function toPlainChat(text) {
+        if (!text) return '';
+        try {
+            let t = String(text);
+            t = t.replace(/```[\s\S]*?```/g, '');
+            t = t.replace(/^#+\s*/gm, '');
+            t = t.replace(/\*\*([^*]+)\*\*/g, '$1');
+            t = t.replace(/\*([^*]+)\*/g, '$1');
+            t = t.replace(/\s+/g, ' ').trim();
+            return t;
+        } catch { return text; }
     }
 
     function showToast(message) {
@@ -781,69 +898,6 @@ function initializeSidebar() {
                 });
             }
         });
-    }
-
-    function openHomepageWithAuth() {
-        if (!chrome || !chrome.tabs || !chrome.tabs.create) {
-            window.open(HOMEPAGE_URL, '_blank', 'noopener');
-            return;
-        }
-
-        chrome.tabs.create({ url: HOMEPAGE_URL }, (tab) => {
-            if (!tab || typeof tab.id !== 'number') {
-                return;
-            }
-
-            if (!authToken) {
-                return;
-            }
-
-            injectAuthIntoTab(tab.id, authToken, authUser);
-        });
-    }
-
-    function injectAuthIntoTab(tabId, token, user) {
-        if (!chrome || !chrome.scripting || !token) {
-            return;
-        }
-
-        try {
-            const execution = chrome.scripting.executeScript({
-                target: { tabId },
-                world: 'MAIN',
-                injectImmediately: true,
-                func: (tokenValue, userValue, source, messageType) => {
-                    try {
-                        if (tokenValue) {
-                            window.localStorage.setItem('chatter_token', tokenValue);
-                        } else {
-                            window.localStorage.removeItem('chatter_token');
-                        }
-                    } catch (storageError) {
-                        console.warn('[popup] Unable to sync token to homepage', storageError);
-                    }
-
-                    window.postMessage(
-                        {
-                            source,
-                            type: messageType,
-                            token: tokenValue,
-                            user: userValue ?? null,
-                        },
-                        '*',
-                    );
-                },
-                args: [token, user, AUTH_SOURCE_EXTENSION, AUTH_MESSAGE_TYPE],
-            });
-
-            if (execution && typeof execution.catch === 'function') {
-                execution.catch((error) => {
-                    console.warn('[popup] Failed to inject auth state', error);
-                });
-            }
-        } catch (error) {
-            console.warn('[popup] Injection setup failed', error);
-        }
     }
 
     function updateAccountUI() {

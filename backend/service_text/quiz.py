@@ -3,33 +3,36 @@
 from __future__ import annotations
 
 import json
+import random
 import re
 import unicodedata
-import random
 from dataclasses import dataclass
-from typing import Iterable, List, Optional
+from typing import Iterable, List, Optional, Tuple
 
 import google.generativeai as genai
 
+from .language import DEFAULT_LANGUAGE, get_quiz_settings, normalize_language  # type: ignore
+
 QUIZ_MODEL = "gemini-2.0-flash-lite-preview"
 
-QUIZ_PROMPT_TEMPLATE = """You are an English vocabulary tutor.
-The learner sees a Korean sentence with one target expression highlighted.
-Generate exactly {option_count} multiple-choice options so the learner can pick the best English word or short phrase for the highlight.
+QUIZ_PROMPT_TEMPLATE = """
+You are {tutor_title}.
+The learner sees a passage with one expression highlighted.
+Generate exactly {option_count} multiple-choice options so the learner can pick the best {target_language_name} expression for the highlight.
 
 Return a strict JSON object with this schema (no commentary, no markdown):
 {{
-  "prompt": "<Korean instruction explaining which word to pick>",
+  "prompt": "<instruction shown to the learner in Korean>",
   "options": ["option1", "option2", ...],
   "answer_index": <zero-based index of the correct option>,
   "explanation": "<Very short Korean note giving the meaning or nuance>"
 }}
 
 Requirements:
-- The correct option (located at answer_index) must be a natural English translation of the highlighted phrase.
-- All options must be unique, ASCII-only English (letters, spaces, apostrophes, hyphen) with 1-3 words.
-- Provide plausible distractors that fit the sentence but have different meanings.
-- Keep the instruction prompt under 60 Korean characters.
+- The correct option (located at answer_index) must be a natural {target_language_name} expression.
+- All options must be {option_requirements}
+- Provide the explanation in {explanation_language}.
+- Do not include romanization unless it is part of a natural expression.
 
 [Sentence]
 {sentence}
@@ -41,18 +44,7 @@ Requirements:
 {context}
 """
 
-FALLBACK_OPTIONS = [
-    "take action",
-    "make progress",
-    "stay focused",
-    "keep in mind",
-    "find a solution",
-    "move forward",
-    "ask for help",
-    "think it through",
-    "stay patient",
-    "try again",
-]
+LATIN_OPTION_SANITIZE_RE = re.compile(r"[^A-Za-z'\-\s]")
 
 
 @dataclass
@@ -67,22 +59,20 @@ class QuizGenerationError(RuntimeError):
     """Raised when the quiz model fails or returns malformed data."""
 
 
-_OPTION_SANITIZE_RE = re.compile(r"[^A-Za-z'\-\s]")
-
-
-def _sanitize_option(text: str) -> str:
+def _sanitize_option(text: str, *, mode: str) -> str:
     if not isinstance(text, str):
         return ""
-    normalized = unicodedata.normalize("NFKC", text)
-    cleaned = _OPTION_SANITIZE_RE.sub("", normalized)
-    collapsed = re.sub(r"\s+", " ", cleaned).strip()
-    return collapsed[:48]
+    normalized = unicodedata.normalize("NFKC", text).strip()
+    if mode == "latin":
+        cleaned = LATIN_OPTION_SANITIZE_RE.sub("", normalized)
+        collapsed = re.sub(r"\s+", " ", cleaned).strip()
+        return collapsed[:48]
+    # unicode mode: allow native scripts, just collapse whitespace
+    return re.sub(r"\s+", " ", normalized).strip()[:32]
 
 
 def _is_valid_option(text: str) -> bool:
-    if not text:
-        return False
-    return bool(re.search(r"[A-Za-z]", text))
+    return bool(text and text.strip())
 
 
 def _parse_json_payload(raw_text: str) -> dict:
@@ -97,35 +87,57 @@ def _parse_json_payload(raw_text: str) -> dict:
         raise
 
 
-def _deduplicate_options(options: Iterable[str], answer_index: int) -> (List[str], int):
+def _deduplicate_options(
+    options: Iterable[str],
+    answer_index: int,
+    *,
+    sanitize_mode: str,
+) -> Tuple[List[str], int]:
     seen: dict[str, int] = {}
     result: List[str] = []
     updated_answer = -1
 
     for idx, option in enumerate(options):
-        sanitized = _sanitize_option(option)
+        sanitized = _sanitize_option(option, mode=sanitize_mode)
         if not _is_valid_option(sanitized):
             continue
-        lower = sanitized.lower()
-        if lower in seen:
+        lowered = sanitized.lower()
+        if lowered in seen:
             if idx == answer_index and updated_answer == -1:
-                updated_answer = seen[lower]
+                updated_answer = seen[lowered]
             continue
-        seen[lower] = len(result)
+        seen[lowered] = len(result)
         if idx == answer_index and updated_answer == -1:
             updated_answer = len(result)
         result.append(sanitized)
 
-    return result, updated_answer
+    if updated_answer == -1 and 0 <= answer_index < len(result):
+        updated_answer = answer_index
+    return result, max(0, updated_answer)
 
 
-def _fill_with_fallback(options: List[str], answer_index: int, limit: int) -> (List[str], int):
+def _fill_with_fallback(
+    options: List[str],
+    answer_index: int,
+    *,
+    option_count: int,
+    fallback_options: List[str],
+    sanitize_mode: str,
+) -> Tuple[List[str], int]:
     seen_lower = {opt.lower() for opt in options}
-    for candidate in FALLBACK_OPTIONS:
-        if len(options) >= limit:
+    for candidate in fallback_options:
+        if len(options) >= option_count:
             break
-        sanitized = _sanitize_option(candidate)
+        sanitized = _sanitize_option(candidate, mode=sanitize_mode)
         if not sanitized or sanitized.lower() in seen_lower:
+            continue
+        options.append(sanitized)
+        seen_lower.add(sanitized.lower())
+
+    while len(options) < option_count:
+        filler = f"option {len(options) + 1}"
+        sanitized = _sanitize_option(filler, mode=sanitize_mode)
+        if sanitized.lower() in seen_lower:
             continue
         options.append(sanitized)
         seen_lower.add(sanitized.lower())
@@ -139,19 +151,20 @@ def _build_fallback_quiz(
     highlight: str,
     *,
     option_count: int,
+    settings: Dict[str, str],
 ) -> Quiz:
-    prompt = "하이라이트된 표현에 들어갈 영어 단어를 골라보세요."
-    answer_candidate = _sanitize_option(highlight)
-
     options: List[str] = []
     seen: set[str] = set()
+    sanitize_mode = settings["sanitize_mode"]
+    fallback = settings["fallback_options"]
 
-    if answer_candidate:
-        options.append(answer_candidate)
-        seen.add(answer_candidate.lower())
+    highlight_candidate = _sanitize_option(highlight, mode=sanitize_mode)
+    if highlight_candidate:
+        options.append(highlight_candidate)
+        seen.add(highlight_candidate.lower())
 
-    for candidate in random.sample(FALLBACK_OPTIONS, k=len(FALLBACK_OPTIONS)):
-        sanitized = _sanitize_option(candidate)
+    for candidate in random.sample(fallback, k=len(fallback)):
+        sanitized = _sanitize_option(candidate, mode=sanitize_mode)
         if not sanitized or sanitized.lower() in seen:
             continue
         options.append(sanitized)
@@ -159,17 +172,12 @@ def _build_fallback_quiz(
         if len(options) >= option_count:
             break
 
-    while len(options) < option_count:
-        filler = f"choice {len(options) + 1}"
-        if filler.lower() in seen:
-            continue
-        options.append(filler)
-        seen.add(filler.lower())
-
-    answer_index = (
-        options.index(answer_candidate)
-        if answer_candidate and answer_candidate in options
-        else 0
+    options, answer_index = _fill_with_fallback(
+        options,
+        0,
+        option_count=option_count,
+        fallback_options=fallback,
+        sanitize_mode=sanitize_mode,
     )
 
     explanation = None
@@ -177,7 +185,7 @@ def _build_fallback_quiz(
         explanation = f"문장 참고: {sentence.strip()}"
 
     return Quiz(
-        prompt=prompt,
+        prompt=settings["prompt_text"],
         options=options[:option_count],
         answer_index=answer_index,
         explanation=explanation,
@@ -189,50 +197,65 @@ def generate_translation_quiz(
     highlight: str,
     *,
     option_count: int = 3,
-    context: str | None = None,
+    context: Optional[str] = None,
+    language: str = DEFAULT_LANGUAGE,
 ) -> Quiz:
     if option_count < 3:
         option_count = 3
 
+    language_code = normalize_language(language)
+    settings = get_quiz_settings(language_code)
+    context_text = (context or "").strip()
+
     try:
         model = genai.GenerativeModel(QUIZ_MODEL)
         prompt = QUIZ_PROMPT_TEMPLATE.format(
+            tutor_title=settings["tutor_title"],
+            option_count=option_count,
+            target_language_name=settings["target_language_name"],
+            option_requirements=settings["option_requirements"],
+            explanation_language=settings["explanation_language"],
             sentence=sentence.strip(),
             highlight=highlight.strip(),
-            context=(context or "").strip() or "없음",
-            option_count=option_count,
+            context=context_text,
         )
         response = model.generate_content(prompt)
-        raw_text = "".join(part.text for part in response.candidates[0].content.parts).strip()
+        raw_text = response.text.strip().replace("```json", "").replace("```", "").strip()
         payload = _parse_json_payload(raw_text)
 
-        options_raw = payload.get("options") or []
-        if not isinstance(options_raw, list):
-            options_raw = []
+        options = payload.get("options") or []
+        answer_index = int(payload.get("answer_index", 0))
+        options, answer_index = _deduplicate_options(
+            options,
+            answer_index,
+            sanitize_mode=settings["sanitize_mode"],
+        )
 
-        answer_index_raw = payload.get("answer_index")
-        answer_index = int(answer_index_raw) if isinstance(answer_index_raw, (int, float)) else 0
+        if not options:
+            raise QuizGenerationError("Quiz model returned no valid options.")
 
-        options_clean, updated_answer = _deduplicate_options(options_raw, answer_index)
-        if updated_answer == -1:
-            updated_answer = 0
-        options_clean, updated_answer = _fill_with_fallback(options_clean, updated_answer, option_count)
+        options, answer_index = _fill_with_fallback(
+            options,
+            answer_index,
+            option_count=option_count,
+            fallback_options=settings["fallback_options"],
+            sanitize_mode=settings["sanitize_mode"],
+        )
 
-        if len(options_clean) < option_count:
-            raise QuizGenerationError("Quiz generation returned insufficient unique options.")
-
-        prompt_text = str(payload.get("prompt") or "").strip() or "하이라이트된 표현에 들어갈 영어 단어를 골라보세요."
-        explanation = str(payload.get("explanation") or "").strip() or None
+        prompt_text = payload.get("prompt") or settings["prompt_text"]
+        explanation = payload.get("explanation")
 
         return Quiz(
             prompt=prompt_text,
-            options=options_clean[:option_count],
-            answer_index=updated_answer,
-            explanation=explanation,
+            options=options[:option_count],
+            answer_index=max(0, min(answer_index, len(options) - 1)),
+            explanation=explanation.strip() if isinstance(explanation, str) else None,
         )
-    except Exception:
+    except Exception as exc:
+        print(f"[quiz] generation failed: {exc}")
         return _build_fallback_quiz(
-            sentence=sentence,
-            highlight=highlight,
+            sentence,
+            highlight,
             option_count=option_count,
+            settings=settings,
         )

@@ -62,6 +62,14 @@ try:
         list_goal_achievements,
     )
     from .quiz import generate_translation_quiz, QuizGenerationError  # type: ignore
+    from .language import (  # type: ignore
+        DEFAULT_LANGUAGE,
+        build_discussion_evaluation_prompt,
+        build_writing_evaluation_prompt,
+        get_language_config,
+        get_no_answer_message,
+        normalize_language,
+    )
 except Exception:
     # 스크립트로 직접 실행되는 경우
     from analyze import analyze
@@ -105,6 +113,14 @@ except Exception:
         list_goal_achievements,
     )
     from quiz import generate_translation_quiz, QuizGenerationError
+    from language import (
+        DEFAULT_LANGUAGE,
+        build_discussion_evaluation_prompt,
+        build_writing_evaluation_prompt,
+        get_language_config,
+        get_no_answer_message,
+        normalize_language,
+    )
 
 # --- 환경 변수 및 API 클라이언트 설정 ---
 load_dotenv(find_dotenv())
@@ -138,10 +154,12 @@ def _resolve_goal_date(value: Optional[str]) -> str:
 class QuestionsRequest(BaseModel):
     text: Optional[str] = None
     max_questions: int = Field(5, ge=0, le=20)
+    language: Optional[str] = Field(DEFAULT_LANGUAGE, max_length=8)
 
 class AnalyzeUrlRequest(BaseModel):
     url: str = Field(..., min_length=8)
     max_questions: int = Field(0, ge=0, le=20)
+    language: Optional[str] = Field(DEFAULT_LANGUAGE, max_length=8)
 
 class QuestionAnswerItem(BaseModel):
     question: str
@@ -152,12 +170,14 @@ class SaveQuestionsRequest(BaseModel):
     summary: Optional[str] = None
     topics: Optional[List[str]] = None
     selection_text: Optional[str] = Field(None, max_length=4000)
+    language: Optional[str] = Field(DEFAULT_LANGUAGE, max_length=8)
 
 class QuizRequest(BaseModel):
     sentence: str = Field(..., min_length=1, description="Sentence containing the highlighted phrase.")
     highlight: str = Field(..., min_length=1, description="Highlighted phrase to translate into English.")
     context: Optional[str] = Field(None, description="Additional context for the quiz generation model.")
     option_count: int = Field(3, ge=3, le=5, description="Number of answer options to generate.")
+    language: Optional[str] = Field(DEFAULT_LANGUAGE, max_length=8)
 
 class QuizResponse(BaseModel):
     prompt: str
@@ -168,6 +188,7 @@ class QuizResponse(BaseModel):
 # --- 신규 평가 기능 모델 추가 ---
 class EvaluationRequest(BaseModel):
     items: List[QuestionAnswerItem]
+    language: Optional[str] = Field(DEFAULT_LANGUAGE, max_length=8)
 
 class EvaluationScores(BaseModel):
     grammar: int
@@ -188,22 +209,27 @@ class SaveEvaluationRequest(BaseModel):
     topics: List[str]
     items: List[EvaluatedItem]
     source_text: str
+    language: Optional[str] = Field(DEFAULT_LANGUAGE, max_length=8)
 
 class ChatStartRequest(BaseModel):
     text: str
     max_questions: int = Field(6, ge=1, le=20)
+    language: Optional[str] = Field(DEFAULT_LANGUAGE, max_length=8)
 
 class ChatReplyRequest(BaseModel):
     session_id: str
     answer: str
+    language: Optional[str] = Field(DEFAULT_LANGUAGE, max_length=8)
 
 
 class ChatEndRequest(BaseModel):
     session_id: str
+    language: Optional[str] = Field(DEFAULT_LANGUAGE, max_length=8)
 
 
 class DiscussionEvaluationRequest(BaseModel):
     record_id: str
+    language: Optional[str] = Field(DEFAULT_LANGUAGE, max_length=8)
 
 
 class LevelTestOption(BaseModel):
@@ -370,7 +396,8 @@ async def get_my_daily_goal_history(
 @app.post("/questions")
 def post_questions(req: QuestionsRequest):
     try:
-        return analyze((req.text or "").strip(), max_questions=req.max_questions)
+        language_code = normalize_language(req.language)
+        return analyze((req.text or "").strip(), max_questions=req.max_questions, language=language_code)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -378,10 +405,12 @@ def post_questions(req: QuestionsRequest):
 @app.post("/analyze_url")
 def post_analyze_url(req: AnalyzeUrlRequest):
     try:
+        language_code = normalize_language(req.language)
         text, meta = extract_from_url(req.url)
-        result = analyze(text.strip(), max_questions=req.max_questions)
-        # 메타 정보 포함
-        result["meta"] = {**(result.get("meta") or {}), **meta}
+        result = analyze(text.strip(), max_questions=req.max_questions, language=language_code)
+        merged_meta = {**(result.get("meta") or {}), **meta, "language": language_code}
+        result["meta"] = merged_meta
+        result["language"] = language_code
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -394,11 +423,13 @@ def post_quiz_cloze(req: QuizRequest):
     if not sentence or not highlight:
         raise HTTPException(status_code=400, detail="Sentence and highlight are required.")
     try:
+        language_code = normalize_language(req.language)
         quiz = generate_translation_quiz(
             sentence=sentence,
             highlight=highlight,
             option_count=req.option_count,
             context=req.context,
+            language=language_code,
         )
         return QuizResponse(
             prompt=quiz.prompt,
@@ -491,29 +522,6 @@ def get_level_test_words(count: int = Query(3, ge=1, le=10)):
 # ✅ [신규] 답변 평가 API
 EVALUATION_MODEL = "gemini-2.0-flash-lite-preview"
 JSON_GENERATION_CONFIG = {"response_mime_type": "application/json"}
-EVALUATION_PROMPT_TEMPLATE = """
-    당신은 외국어 학습자의 답변을 평가하는 AI 선생님입니다. 다음은 학생이 질문에 대해 작성한 답변입니다.
-    - 질문: "{question}"
-    - 학생 답변: "{answer}"
-    아래의 세 가지 기준에 따라 답변을 평가하고, 각 항목별 점수(1~5점)와 구체적인 서술형 피드백을 JSON 형식으로 반환해 주세요.
-    1.  **문법 및 정확성 (Grammar & Accuracy):** 문법 오류, 단어 선택의 정확성 평가
-    2.  **어휘 사용 (Vocabulary Usage):** 사용된 어휘의 수준과 다양성 평가
-    3.  **논리 및 명확성 (Clarity & Coherence):** 답변의 구조적 논리성과 명확성 평가
-    피드백은 칭찬과 개선점을 모두 포함하고, 해당 사항을 반영한 예시 답변도 반환하여 주세요. 분량은 공백 포함 400자 이내로 제한하여 대답합니다.
-    JSON 출력 예시: {{"scores": {{"grammar": 4, "vocabulary": 3, "clarity": 5}}, "feedback": "문법적으로는 훌륭하지만..."}}
-    """
-
-DISCUSSION_EVALUATION_PROMPT_TEMPLATE = """
-    당신은 영어 토론 코치입니다. 아래의 토론 기록(역할: AI 또는 User)을 보고, User의 발화 품질을 평가해 주세요.
-    세 가지 항목(문법, 어휘, 논리)을 1~5점 정수로 채점하고, 개선을 위한 짧은 피드백을 1-2문장으로 작성합니다.
-
-    토론 기록:
-    ---
-    {transcript}
-    ---
-
-    JSON 형식으로만 응답하세요. 예시: {{"scores": {{"grammar": 4, "vocabulary": 3, "clarity": 5}}, "feedback": "..."}}
-"""
 
 # --- 공통 유틸 ---
 def _extract_json_dict(raw_text: str) -> Dict:
@@ -581,18 +589,24 @@ def _extract_json_from_response(response) -> Dict:
 
 @app.post("/evaluate/answers", tags=["Answer Evaluation"])
 async def evaluate_answers(req: EvaluationRequest):
+    language_code = normalize_language(req.language)
+    missing_answer_message = get_no_answer_message(language_code)
     try:
         model = genai.GenerativeModel(EVALUATION_MODEL)
         evaluations = []
         for item in req.items:
             if not item.answer or not item.answer.strip():
                 evaluations.append({
-                    "question": item.question, "answer": item.answer,
-                    "evaluation": {"scores": {"grammar": 0, "vocabulary": 0, "clarity": 0}, "feedback": "답변이 입력되지 않았습니다."}
+                    "question": item.question,
+                    "answer": item.answer,
+                    "evaluation": {
+                        "scores": {"grammar": 0, "vocabulary": 0, "clarity": 0},
+                        "feedback": missing_answer_message,
+                    },
                 })
                 continue
 
-            prompt = EVALUATION_PROMPT_TEMPLATE.format(question=item.question, answer=item.answer)
+            prompt = build_writing_evaluation_prompt(language_code, item.question, item.answer)
             response = await model.generate_content_async(prompt, generation_config=JSON_GENERATION_CONFIG)
             evaluation_data = _extract_json_from_response(response)
             evaluations.append({"question": item.question, "answer": item.answer, "evaluation": evaluation_data})
@@ -609,7 +623,7 @@ async def evaluate_discussion(req: DiscussionEvaluationRequest, current_user: di
         raise HTTPException(status_code=404, detail="Record not found")
     history = (record.get("payload") or {}).get("history") or []
     if not history:
-        raise HTTPException(status_code=400, detail="평가할 토론 기록이 없습니다.")
+        raise HTTPException(status_code=400, detail="토론 기록이 비어 있습니다.")
 
     transcript_lines = []
     for entry in history:
@@ -617,7 +631,9 @@ async def evaluate_discussion(req: DiscussionEvaluationRequest, current_user: di
         content = entry.get("content", "")
         transcript_lines.append(f"{role}: {content}")
 
-    prompt = DISCUSSION_EVALUATION_PROMPT_TEMPLATE.format(transcript="\n".join(transcript_lines))
+    meta_language = (record.get("meta") or {}).get("language")
+    language_code = normalize_language(req.language or meta_language)
+    prompt = build_discussion_evaluation_prompt(language_code, "\n".join(transcript_lines))
     try:
         model = genai.GenerativeModel(EVALUATION_MODEL)
         response = await model.generate_content_async(prompt, generation_config=JSON_GENERATION_CONFIG)
@@ -626,10 +642,11 @@ async def evaluate_discussion(req: DiscussionEvaluationRequest, current_user: di
         raise HTTPException(status_code=500, detail=f"토론 평가에 실패했습니다: {exc}")
 
     payload = record.get("payload") or {}
+    meta_payload = {**(record.get("meta") or {}), "language": language_code}
     save_discussion_record(
         history=history,
         initial_questions=payload.get("initial_questions") or [],
-        meta=record.get("meta"),
+        meta=meta_payload,
         source_text=payload.get("source_text", ""),
         user_id=current_user["id"],
         record_id=req.record_id,
@@ -644,21 +661,20 @@ def save_evaluated_record(
     current_user: dict = Depends(get_current_user),
 ):
     try:
-        # Pydantic 모델을 Python 딕셔너리로 변환
+        language_code = normalize_language(req.language)
         items_to_save = [item.dict() for item in req.items]
-        meta = {"summary": req.summary, "topics": req.topics}
-        
-        # records.py의 save_questions_record 함수를 evaluation_results와 함께 호출
+        meta = {"summary": req.summary, "topics": req.topics, "language": language_code}
+
         saved_record = save_questions_record(
             items=items_to_save,
             meta=meta,
             source_text=req.source_text,
-            evaluation_results={"evaluations": items_to_save}, # 평가 결과를 함께 저장
+            evaluation_results={"evaluations": items_to_save},
             user_id=current_user["id"],
         )
         return saved_record
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"평가 기록 저장 실패: {e}")
+        raise HTTPException(status_code=500, detail=f"�� ��� ���� ����: {e}")
 
 
 @app.post("/records/questions")
@@ -667,8 +683,9 @@ def post_save_questions(
     current_user: Optional[dict] = Depends(get_current_user_optional),
 ):
     try:
+        language_code = normalize_language(req.language)
         items_serialized = [item.model_dump() for item in req.items]
-        meta = {"summary": req.summary, "topics": req.topics}
+        meta = {"summary": req.summary, "topics": req.topics, "language": language_code}
         user_id = current_user["id"] if current_user else None
         record = save_questions_record(
             items_serialized,
@@ -687,15 +704,22 @@ def post_chat_start(
     current_user: Optional[dict] = Depends(get_current_user_optional),
 ):
     try:
+        language_code = normalize_language(req.language)
         user_id = current_user["id"] if current_user else None
-        return CHAT_MANAGER.start(req.text, max_q=req.max_questions, user_id=user_id)
+        return CHAT_MANAGER.start(
+            req.text,
+            max_q=req.max_questions,
+            user_id=user_id,
+            language=language_code,
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/chat/reply")
 def post_chat_reply(req: ChatReplyRequest):
     try:
-        result = CHAT_MANAGER.reply(req.session_id.strip(), req.answer.strip())
+        language_code = normalize_language(req.language)
+        result = CHAT_MANAGER.reply(req.session_id.strip(), req.answer.strip(), language=language_code)
         if "error" in result:
             raise HTTPException(status_code=400, detail=result["error"])
         return result
@@ -706,7 +730,8 @@ def post_chat_reply(req: ChatReplyRequest):
 @app.post("/chat/end")
 def post_chat_end(req: ChatEndRequest):
     try:
-        result = CHAT_MANAGER.end(req.session_id.strip())
+        language_code = normalize_language(req.language)
+        result = CHAT_MANAGER.end(req.session_id.strip(), language=language_code)
         if "error" in result:
             raise HTTPException(status_code=400, detail=result["error"])
         return result
